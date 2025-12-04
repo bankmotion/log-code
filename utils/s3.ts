@@ -1,0 +1,231 @@
+import { S3Client, ListObjectsV2Command, PutObjectCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { config } from '../config.js';
+import { execSync } from 'child_process';
+import { readFileSync, mkdirSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
+
+// Build S3 client configuration
+const s3Config: any = {
+  endpoint: config.s3.endpoint,
+  region: config.s3.region
+};
+
+// If credentials are provided via environment variables, use them directly
+if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+  s3Config.credentials = {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  };
+} else {
+  // Otherwise, set AWS_PROFILE so the SDK can use the credentials file
+  // The default credential provider chain will look for ~/.aws/credentials
+  if (config.s3.profile && !process.env.AWS_PROFILE) {
+    process.env.AWS_PROFILE = config.s3.profile;
+  }
+}
+
+// Create S3 client with credentials
+// AWS SDK will use:
+// 1. Explicit credentials from environment variables (if provided above)
+// 2. AWS credentials file (~/.aws/credentials) with the profile from AWS_PROFILE
+// 3. Default credential provider chain
+const s3Client = new S3Client(s3Config);
+
+export async function listAllFolders(bucket: string): Promise<string[]> {
+  const folders: string[] = [];
+  let continuationToken: string | undefined = undefined;
+
+  do {
+    const command: ListObjectsV2Command = new ListObjectsV2Command({
+      Bucket: bucket,
+      Delimiter: '/',
+      ContinuationToken: continuationToken
+    });
+
+    const response = await s3Client.send(command) as any;
+
+    if (response.CommonPrefixes) {
+      for (const prefix of response.CommonPrefixes) {
+        if (prefix.Prefix) {
+          const folderPath = `s3://${bucket}/${prefix.Prefix}`;
+          folders.push(folderPath);
+        }
+      }
+    }
+
+    continuationToken = response.NextContinuationToken;
+  } while (continuationToken);
+
+  return folders;
+}
+
+async function downloadSingleFile(bucket: string, key: string, localPath: string, prefix: string): Promise<void> {
+  const getCommand = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key
+  });
+  
+  const getResponse = await s3Client.send(getCommand);
+  
+  // Calculate relative path from the folder prefix
+  const relativePath = key.replace(prefix, '');
+  const filePath = join(localPath, relativePath);
+  const fileDir = dirname(filePath);
+  
+  // Ensure subdirectory exists
+  if (fileDir !== localPath && fileDir !== '.') {
+    mkdirSync(fileDir, { recursive: true });
+  }
+  
+  // Read the stream and write to file
+  if (getResponse.Body) {
+    const chunks: Uint8Array[] = [];
+    // @ts-ignore - Body is a Readable stream
+    for await (const chunk of getResponse.Body) {
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+    writeFileSync(filePath, buffer);
+  }
+}
+
+export async function downloadFolder(bucket: string, folderPath: string, localPath: string): Promise<boolean> {
+  // Use AWS SDK to download files recursively with parallel batch downloads
+  console.log(`Downloading s3://${bucket}/${folderPath} to ${localPath}`);
+  
+  try {
+    // Ensure local directory exists
+    mkdirSync(localPath, { recursive: true });
+    
+    // Normalize folder path (ensure it ends with /)
+    const prefix = folderPath.endsWith('/') ? folderPath : folderPath + '/';
+    
+    // First, collect all file keys
+    const fileKeys: string[] = [];
+    let continuationToken: string | undefined = undefined;
+    
+    console.log('Listing files in S3...');
+    do {
+      const listCommand = new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken
+      });
+      
+      const listResponse = await s3Client.send(listCommand) as any;
+      
+      if (listResponse.Contents && listResponse.Contents.length > 0) {
+        for (const object of listResponse.Contents) {
+          if (object.Key) {
+            fileKeys.push(object.Key);
+          }
+        }
+      }
+      
+      continuationToken = listResponse.NextContinuationToken;
+    } while (continuationToken);
+    
+    console.log(`Found ${fileKeys.length} files. Starting parallel downloads...`);
+    
+    // Download files in parallel batches
+    const BATCH_SIZE = 20; // Download 20 files concurrently
+    let totalDownloaded = 0;
+    const startTime = Date.now();
+    
+    for (let i = 0; i < fileKeys.length; i += BATCH_SIZE) {
+      const batch = fileKeys.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(fileKeys.length / BATCH_SIZE);
+      
+      // Download batch in parallel
+      await Promise.all(
+        batch.map(async (key) => {
+          try {
+            await downloadSingleFile(bucket, key, localPath, prefix);
+            totalDownloaded++;
+            
+            if (totalDownloaded % 50 === 0) {
+              const elapsed = (Date.now() - startTime) / 1000;
+              const rate = totalDownloaded / elapsed;
+              const remaining = fileKeys.length - totalDownloaded;
+              const eta = remaining / rate;
+              console.log(`Progress: ${totalDownloaded}/${fileKeys.length} files (${rate.toFixed(1)} files/sec, ETA: ${eta.toFixed(0)}s)`);
+            }
+          } catch (error) {
+            console.error(`Failed to download ${key}:`, error);
+            throw error;
+          }
+        })
+      );
+      
+      console.log(`Batch ${batchNumber}/${totalBatches} completed (${totalDownloaded}/${fileKeys.length} files)`);
+    }
+    
+    const elapsed = (Date.now() - startTime) / 1000;
+    const rate = totalDownloaded / elapsed;
+    console.log(`Successfully downloaded ${totalDownloaded} files to ${localPath} in ${elapsed.toFixed(1)}s (${rate.toFixed(1)} files/sec)`);
+    return true;
+  } catch (error) {
+    console.error('Download failed:', error);
+    throw error;
+  }
+}
+
+export async function uploadFile(localPath: string, bucket: string, key: string): Promise<boolean> {
+  const fileContent = readFileSync(localPath);
+  
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: fileContent
+  });
+
+  try {
+    await s3Client.send(command);
+    return true;
+  } catch (error) {
+    console.error('Upload failed:', error);
+    throw error;
+  }
+}
+
+export async function doesS3Exist(bucket: string, key: string): Promise<boolean> {
+  try {
+    const command = new HeadObjectCommand({
+      Bucket: bucket,
+      Key: key
+    });
+    await s3Client.send(command);
+    return true;
+  } catch (error: any) {
+    if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export async function rcloneCopy(localPath: string, remotePath: string): Promise<string> {
+  if (!config.rclone.enabled) {
+    // Fallback to S3 upload if rclone is not enabled
+    const match = remotePath.match(/s3:\/\/([^\/]+)\/(.+)/);
+    if (match) {
+      const [, bucket, key] = match;
+      await uploadFile(localPath, bucket, key);
+      return 'success';
+    }
+    return 'failed';
+  }
+
+  const command = `rclone copy "${localPath}" "${config.rclone.remote}${remotePath.replace(/^s3:\/\//, '')}"`;
+  console.log(command);
+  
+  try {
+    execSync(command, { stdio: 'inherit' });
+    return 'success';
+  } catch (error) {
+    console.error('Rclone copy failed:', error);
+    return 'failed';
+  }
+}
+

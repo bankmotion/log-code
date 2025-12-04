@@ -1,0 +1,29 @@
+{
+  "name": "log-processor",
+  "version": "1.0.0",
+  "description": "Log processing system for cloudflare logs",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx index.ts",
+    "dev": "tsx index.ts",
+    "dev:f": "tsx index.ts f",
+    "dev:m": "tsx index.ts m",
+    "dev:fans": "tsx index.ts fans"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.490.0",
+    "dotenv": "^16.3.1",
+    "mysql2": "^3.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

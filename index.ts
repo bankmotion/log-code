@@ -1,0 +1,380 @@
+import 'dotenv/config';
+import { readdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import crypto from 'crypto';
+import { config } from './config.js';
+import { sqlQuery } from './utils/database.js';
+import { listAllFolders, downloadFolder, rcloneCopy, doesS3Exist } from './utils/s3.js';
+import { 
+  bashCommand, 
+  shellQuote, 
+  removeDuplicatesFile, 
+  extractDateFromFilename,
+  readGzippedFile,
+  readTextFile,
+  ensureDirectoryExists,
+  removeDirectory,
+  removeFile
+} from './utils/fileUtils.js';
+import { whatIsGender, loadHtmlMap, identifyItem } from './utils/urlIdentifier.js';
+
+interface LogEntry {
+  db?: string;
+  id?: string;
+  ip: string;
+  date: string;
+}
+
+// Parse command line arguments
+const genderGet = process.argv[2];
+if (!genderGet) {
+  console.error('Usage: node index.js <gender>');
+  console.error('Gender must be: f, m, or fans');
+  process.exit(1);
+}
+
+const genderType = whatIsGender(genderGet);
+if (!genderType) {
+  console.error('Bad gender here! Must be: f, m, or fans');
+  process.exit(1);
+}
+
+let bucketName: string;
+let bucketNameClean: string;
+let databaseGlobal: string;
+let genderGlobalLog: string;
+
+if (genderType === 'f') {
+  genderGlobalLog = genderType;
+  bucketName = 'aznude-logs';
+  bucketNameClean = 'aznude-clean-logs';
+  databaseGlobal = config.databases.AZNUDE;
+} else if (genderType === 'm') {
+  genderGlobalLog = genderType;
+  bucketName = 'azmen-logs';
+  bucketNameClean = 'azmen-clean-logs';
+  databaseGlobal = config.databases.AZNUDEMEN;
+} else if (genderType === 'fans') {
+  genderGlobalLog = genderType;
+  bucketName = 'azfans-logs';
+  bucketNameClean = 'azfans-clean-logs';
+  databaseGlobal = config.databases.AZFANS;
+} else {
+  console.error('Bad gender here!');
+  process.exit(1);
+}
+
+// Load HTML map associations
+console.log('Loading HTML map associations...');
+await loadHtmlMap();
+console.log('HTML map loaded');
+
+// Use local logs folder for notfound file
+const notFoundFile = `./logs/notfound-${genderGlobalLog}.txt`;
+
+async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
+  const dateHi = filePath.split('/').pop() || '';
+  const dateGet = extractDateFromFilename(dateHi);
+  const entries: LogEntry[] = [];
+
+  if (!dateGet) {
+    console.error('Could not extract date from filename:', dateHi);
+    return entries;
+  }
+
+  // Determine if file is gzipped
+  const isGzipped = filePath.endsWith('.gz');
+  const fileIterator = isGzipped ? readGzippedFile(filePath) : readTextFile(filePath);
+
+  let lineCount = 0;
+  for await (const line of fileIterator) {
+    lineCount++;
+    if (lineCount % 10000 === 0) {
+      console.log(`Processed ${lineCount} lines from ${filePath}`);
+    }
+
+    try {
+      const data = JSON.parse(line);
+      let clientRequestHost = data.ClientRequestHost;
+      const clientRequestPath = data.ClientRequestPath;
+      let clientIP = data.ClientIP;
+
+      if (!clientIP) {
+        continue;
+      }
+
+      // Hash IP address
+      clientIP = crypto.createHash('md5').update(String(clientIP)).digest('hex');
+
+      // Normalize host
+      if (clientRequestHost === 'aznude.com' || clientRequestHost === 'azmen.com' || clientRequestHost === 'azfans.com') {
+        clientRequestHost = 'www.' + clientRequestHost;
+      }
+
+      console.log(clientRequestHost);
+
+      // Determine directory and gsutil based on host
+      let dir: string, gsutil: string, gsutilDomain: string;
+      
+      if (['cdn2.aznude.com', 'cdn1.aznude.com', 'www.aznude.com', 'user-uploads.aznude.com', 'aznude.com'].includes(clientRequestHost) || 
+          clientRequestHost.includes('aznude.com')) {
+        dir = config.directories.MAIN_DIR_AZNUDE;
+        gsutil = config.gsutil.GC_WOMEN_HTML;
+        gsutilDomain = gsutil.replace('gs://', '');
+      } else if (['men.aznude.com', 'cdn-men.aznude.com', 'azmen.com', 'www.azmen.com'].includes(clientRequestHost) || 
+                 clientRequestHost.includes('azmen.com')) {
+        dir = config.directories.MAIN_DIR_AZNUDEMEN;
+        gsutil = config.gsutil.GC_MEN_HTML;
+        gsutilDomain = gsutil.replace('gs://', '');
+      } else if (['cdn2.azfans.com', 'azfans.com', 'www.azfans.com'].includes(clientRequestHost) || 
+                 clientRequestHost.includes('azfans.com')) {
+        dir = config.directories.MAIN_DIR_AZFANS;
+        gsutil = config.gsutil.GC_FANS_HTML;
+        gsutilDomain = gsutil.replace('gs://', '');
+      } else {
+        // Default fallback
+        dir = config.directories.MAIN_DIR_AZNUDE;
+        gsutil = config.gsutil.GC_WOMEN_HTML;
+        gsutilDomain = gsutil.replace('gs://', '');
+      }
+
+      if (clientRequestHost && clientRequestPath) {
+        const resultIdentify = await identifyItem(clientRequestHost, clientRequestPath);
+
+        if (resultIdentify === 'unidentified') {
+          const fullThing = clientRequestHost + clientRequestPath;
+          const fullThingServer = fullThing.replace(gsutilDomain, dir);
+          const command = `${config.LEASEWEB_SERVER_SSH} " test -f ${shellQuote(fullThingServer)} && echo File exists || echo File does not exist"`;
+
+          let attemptsFileCheck = 0;
+          let unexpectedError = 0;
+
+          while (true) {
+            console.log(command);
+            try {
+              const outputCommand = bashCommand(command);
+              if (outputCommand.includes('File exists')) {
+                console.log(outputCommand);
+                // Ensure directory exists before writing
+                const notFoundDir = notFoundFile.substring(0, notFoundFile.lastIndexOf('/'));
+                if (!existsSync(notFoundDir)) {
+                  mkdirSync(notFoundDir, { recursive: true });
+                }
+                appendFileSync(notFoundFile, clientRequestHost + clientRequestPath + '\n');
+                break;
+              } else if (outputCommand.includes('File does not exist')) {
+                break;
+              } else if (outputCommand.includes('Syntax error')) {
+                break;
+              } else {
+                console.log('File read failed try again after 10 seconds');
+                attemptsFileCheck++;
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                if (attemptsFileCheck === 10) {
+                  console.error('Unable to read file from leaseweb server');
+                  process.exit(1);
+                }
+              }
+            } catch (error) {
+              console.error(error);
+              console.error('We have unexpected error');
+              unexpectedError++;
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              if (unexpectedError === 10) {
+                console.error('Please check the exception below failed 10 times');
+                process.exit(1);
+              }
+            }
+          }
+        } else if (resultIdentify !== 'invalid') {
+          // Create ordered result with IP and date at the end
+          const orderedResult: LogEntry = {
+            ...resultIdentify,
+            ip: String(clientIP),
+            date: String(dateGet)
+          };
+          entries.push(orderedResult);
+        }
+      }
+    } catch (error) {
+      console.error('Error parsing line:', error);
+      continue;
+    }
+  }
+
+  return entries;
+}
+
+// Main execution
+console.log('Starting log processing...');
+
+// List all folders in bucket
+console.log('Listing folders in bucket:', bucketName);
+const folders = await listAllFolders(bucketName);
+console.log(`Found ${folders.length} folders`);
+
+// Randomize and sort folders
+const shuffled = [...folders].sort(() => Math.random() - 0.5);
+const sortedFolders = shuffled.sort((a, b) => {
+  const dateA = a.split('/').slice(-2, -1)[0];
+  const dateB = b.split('/').slice(-2, -1)[0];
+  return dateA.localeCompare(dateB);
+});
+
+// Remove the last day
+const foldersToProcess = sortedFolders.slice(0, -1);
+
+// Get existing processed folders from database
+const existingFolders: string[] = [];
+const cmdCheck = "SELECT r2_path FROM `logs` WHERE `status` LIKE 'downloaded'";
+const cmdExistingResults = await sqlQuery(cmdCheck, databaseGlobal, 'select') as any[];
+
+for (const row of cmdExistingResults) {
+  existingFolders.push(String(row.r2_path));
+}
+
+console.log('Existing folders:', existingFolders.length);
+
+// Extract dates from existing folders (Python uses datetime.date() for comparison)
+// We'll use string comparison which should work the same for YYYYMMDD format
+const existingDates = new Set<string>();
+for (const f of existingFolders) {
+  // Python: datetime.strptime(f.split('/')[-1].split('.')[0], '%Y%m%d').date()
+  const dateMatch = f.split('/').pop()?.split('.')[0];
+  if (dateMatch && dateMatch.match(/^\d{8}$/)) {
+    existingDates.add(dateMatch);
+  }
+}
+
+// Filter out folders that are already processed
+// Python: datetime.strptime(f.split('/')[-2], '%Y%m%d').date() not in existing_dates
+const filteredFolders = foldersToProcess.filter(f => {
+  const folderDate = f.split('/').slice(-2, -1)[0];
+  return !existingDates.has(folderDate);
+});
+
+console.log('\nSorted List after Removing Existing Items:');
+for (const folder of filteredFolders) {
+  console.log(folder);
+}
+
+if (filteredFolders.length === 0) {
+  console.log('\nNo items left after filtering.');
+  process.exit(0);
+}
+
+// Process the first folder
+const firstFolder = filteredFolders[0];
+const dateDirectory = firstFolder.split('/').slice(-2, -1)[0];
+console.log('\nFirst Item Date after Filtering:');
+console.log(dateDirectory);
+
+// Normalize paths - handle both absolute and relative paths
+const logDir = config.directories.CLOUDFLARE_LOG_DIR.startsWith('./') 
+  ? config.directories.CLOUDFLARE_LOG_DIR 
+  : config.directories.CLOUDFLARE_LOG_DIR;
+  
+const directory = join(logDir, dateDirectory);
+const outputDirectory = join(logDir, 'output');
+const outputFilePath = join(logDir, 'allinone.txt');
+const outputFilePathUnique = join(logDir, 'allinone_unique.txt');
+
+// Step 1: Clean existing files
+console.log('Step 1, cleaning existing files from previous iteration');
+// Only remove the log directory if it exists, then recreate it
+if (existsSync(logDir)) {
+  removeDirectory(logDir);
+}
+ensureDirectoryExists(logDir);
+ensureDirectoryExists(outputDirectory);
+
+// Step 2: Download from source
+console.log('Step 2, downloading from the source');
+await downloadFolder(bucketName, dateDirectory, directory);
+
+// Step 2: Analyze files (Python labels this as "Step 2" but it's actually step 3)
+console.log('Step 2.5, analyzing the files');
+const files = readdirSync(directory)
+  .filter(f => f.endsWith('.log.gz'))
+  .sort();
+
+for (const fileName of files) {
+  const filePath = join(directory, fileName);
+  console.log(`Processing: ${filePath}`);
+  
+  const entryFetch = await parseLargeJsonFile(filePath);
+  // Python: temp_out_file = output_directory + file_path.split('/')[-1]
+  // This gets just the filename from the full path
+  const tempOutFile = join(outputDirectory, fileName);
+
+  console.log(tempOutFile);
+  const outputLines: string[] = [];
+  for (const entry of entryFetch) {
+    // Python prints the entry before writing
+    console.log(entry);
+    const jsonString = JSON.stringify(entry);
+    outputLines.push(jsonString);
+  }
+  writeFileSync(tempOutFile, outputLines.join('\n') + '\n');
+
+  // Remove duplicates
+  removeDuplicatesFile(tempOutFile);
+}
+
+// Step 3: Merge all files
+console.log('Step 3, putting all files into one');
+const outputLines: string[] = [];
+for (const fileName of files) {
+  const tempOutFile = join(outputDirectory, fileName);
+  if (existsSync(tempOutFile)) {
+    const content = readFileSync(tempOutFile, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+    outputLines.push(...lines);
+  }
+}
+writeFileSync(outputFilePath, outputLines.join('\n') + '\n');
+
+// Step 4: Sort and deduplicate
+console.log('Step 4, putting into the cloud and cleaning');
+const allLines = readFileSync(outputFilePath, 'utf-8').split('\n').filter(line => line.trim());
+const uniqueLines = Array.from(new Set(allLines)).sort();
+writeFileSync(outputFilePathUnique, uniqueLines.join('\n') + '\n');
+
+// Check if file exists and upload
+if (existsSync(outputFilePathUnique)) {
+  const rcloneResult = await rcloneCopy(outputFilePathUnique, `s3://${bucketNameClean}/${dateDirectory}.txt`);
+  
+  if (rcloneResult !== 'success') {
+    console.error('Rclone copy failed');
+    process.exit(1);
+  }
+
+  console.log('Copy Success, now delete');
+  console.log('File exists, push it and remove all the garbage');
+  removeDirectory(outputDirectory);
+  removeDirectory(directory);
+  removeFile(outputFilePath);
+  removeFile(outputFilePathUnique);
+} else {
+  console.error('The user interaction could not be generated this is a serious issue');
+  process.exit(1);
+}
+
+// Step 5: Update database
+console.log('Step 5, updating mysql database');
+const cmdUpdate = `INSERT INTO \`logs\` (\`day\`, \`status\`, \`r2_path\`) VALUES ('${dateDirectory}', 'downloaded', 's3://${bucketNameClean}/${dateDirectory}.txt')`;
+
+const fileExists = await doesS3Exist(bucketNameClean, `${dateDirectory}.txt`);
+if (fileExists) {
+  await sqlQuery(cmdUpdate, databaseGlobal, 'update');
+  console.log('Database updated successfully');
+} else {
+  console.error('file push failed, you cannot add it into the database');
+  process.exit(1);
+}
+
+// Remove duplicates from not found file
+removeDuplicatesFile(notFoundFile);
+
+console.log('Processing complete!');
+
