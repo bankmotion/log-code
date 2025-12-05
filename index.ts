@@ -82,6 +82,15 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
     return entries;
   }
 
+  // Batch SSH file checks for performance
+  interface UnidentifiedFile {
+    host: string;
+    path: string;
+    serverPath: string;
+  }
+  const unidentifiedFiles: UnidentifiedFile[] = [];
+  const BATCH_SIZE = 50; // Check 50 files per SSH command
+
   // Determine if file is gzipped
   const isGzipped = filePath.endsWith('.gz');
   const fileIterator = isGzipped ? readGzippedFile(filePath) : readTextFile(filePath);
@@ -163,49 +172,17 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
               fullThingServer = dir + '/' + clientRequestPath;
             }
           }
-          let command = `${config.LEASEWEB_SERVER_SSH} " test -f ${shellQuote(fullThingServer)} && echo File exists || echo File does not exist"`;
-
-          let attemptsFileCheck = 0;
-          let unexpectedError = 0;
-
-          while (true) {
-            // Match Python: command.encode('utf-8').decode('utf-8') - normalize encoding
-            command = Buffer.from(command, 'utf-8').toString('utf-8');
-            console.log(command);
-            try {
-              const outputCommand = bashCommand(command);
-              if (outputCommand.includes('File exists')) {
-                console.log(outputCommand);
-                // Ensure directory exists before writing
-                const notFoundDir = notFoundFile.substring(0, notFoundFile.lastIndexOf('/'));
-                if (!existsSync(notFoundDir)) {
-                  mkdirSync(notFoundDir, { recursive: true });
-                }
-                appendFileSync(notFoundFile, clientRequestHost + clientRequestPath + '\n');
-                break;
-              } else if (outputCommand.includes('File does not exist')) {
-                break;
-              } else if (outputCommand.includes('Syntax error')) {
-                break;
-              } else {
-                console.log('File read failed try again after 10 seconds');
-                attemptsFileCheck++;
-                await new Promise(resolve => setTimeout(resolve, 10000));
-                if (attemptsFileCheck === 10) {
-                  console.error('Unable to read file from leaseweb server');
-                  process.exit(1);
-                }
-              }
-            } catch (error: any) {
-              console.error(error);
-              console.error('We have unexpected error');
-              unexpectedError++;
-              await new Promise(resolve => setTimeout(resolve, 10000));
-              if (unexpectedError === 10) {
-                console.error('Please check the exception below failed 10 times');
-                process.exit(1);
-              }
-            }
+          // Add to batch instead of checking immediately
+          unidentifiedFiles.push({
+            host: clientRequestHost,
+            path: clientRequestPath,
+            serverPath: fullThingServer
+          });
+          
+          // Process batch when it reaches BATCH_SIZE
+          if (unidentifiedFiles.length >= BATCH_SIZE) {
+            await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
+            unidentifiedFiles.length = 0; // Clear the batch
           }
         } else if (resultIdentify !== 'invalid') {
           // Create ordered result with IP and date at the end
@@ -223,7 +200,98 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
     }
   }
 
+  // Process remaining batch items
+  if (unidentifiedFiles.length > 0) {
+    await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
+  }
+
   return entries;
+}
+
+// Batch process SSH file existence checks
+async function processBatchSSHChecks(
+  files: Array<{ host: string; path: string; serverPath: string }>,
+  notFoundFile: string
+): Promise<void> {
+  if (files.length === 0) return;
+  
+  // Build a single SSH command that checks all files
+  // Format: ssh user@host "for file in 'path1' 'path2' ...; do test -f \"$file\" && echo \"EXISTS:$file\" || echo \"NOTEXISTS:$file\"; done"
+  const filePaths = files.map(f => shellQuote(f.serverPath)).join(' ');
+  const command = `${config.LEASEWEB_SERVER_SSH} "for file in ${filePaths}; do test -f \"\\$file\" && echo \"EXISTS:\\$file\" || echo \"NOTEXISTS:\\$file\"; done"`;
+  
+  let attemptsFileCheck = 0;
+  let unexpectedError = 0;
+
+  while (true) {
+    try {
+      const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
+      console.log(`Batch checking ${files.length} files via SSH...`);
+      
+      const outputCommand = bashCommand(normalizedCommand);
+      
+      // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
+      const results = new Map<string, boolean>();
+      const lines = outputCommand.split('\n');
+      
+      for (const line of lines) {
+        if (line.startsWith('EXISTS:')) {
+          const path = line.substring(7).trim();
+          results.set(path, true);
+        } else if (line.startsWith('NOTEXISTS:')) {
+          const path = line.substring(10).trim();
+          results.set(path, false);
+        }
+      }
+      
+      // Process results and write to notfound.txt
+      const notFoundDir = notFoundFile.substring(0, notFoundFile.lastIndexOf('/'));
+      if (!existsSync(notFoundDir)) {
+        mkdirSync(notFoundDir, { recursive: true });
+      }
+      
+      let foundCount = 0;
+      for (const file of files) {
+        const exists = results.get(file.serverPath);
+        if (exists === true) {
+          appendFileSync(notFoundFile, file.host + file.path + '\n');
+          foundCount++;
+        }
+      }
+      
+      if (foundCount > 0) {
+        console.log(`Batch result: ${foundCount}/${files.length} files exist on server`);
+      }
+      
+      break; // Success
+      
+    } catch (error: any) {
+      const errorMessage = error.message || String(error);
+      const errorOutput = error.stderr || error.output?.[2] || '';
+      
+      // Check if it's a persistent SSH authentication error
+      if (errorMessage.includes('Permission denied (publickey)') || 
+          errorOutput.includes('Permission denied (publickey)')) {
+        console.warn(`SSH Authentication Failed for batch - skipping ${files.length} file checks`);
+        break; // Skip batch, continue processing
+      }
+      
+      console.error(`Batch SSH check failed (attempt ${attemptsFileCheck + 1}):`, errorMessage);
+      unexpectedError++;
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      if (unexpectedError >= 10) {
+        console.error('Batch SSH check failed 10 times - skipping batch');
+        break; // Skip batch after 10 failures
+      }
+      
+      attemptsFileCheck++;
+      if (attemptsFileCheck >= 10) {
+        console.error('Unable to check files from leaseweb server after 10 attempts');
+        break; // Skip batch after 10 attempts
+      }
+    }
+  }
 }
 
 // Main execution
@@ -304,14 +372,14 @@ const outputFilePathUnique = join(logDir, 'allinone_unique.txt');
 console.log('Step 1, cleaning existing files from previous iteration');
 // Only remove the log directory if it exists, then recreate it
 if (existsSync(logDir)) {
-  // removeDirectory(logDir);
+  removeDirectory(logDir);
 }
 ensureDirectoryExists(logDir);
 ensureDirectoryExists(outputDirectory);
 
 // Step 2: Download from source
 console.log('Step 2, downloading from the source');
-// await downloadFolder(bucketName, dateDirectory, directory);
+await downloadFolder(bucketName, dateDirectory, directory);
 
 // Step 2: Analyze files (Python labels this as "Step 2" but it's actually step 3)
 console.log('Step 2.5, analyzing the files');
@@ -385,14 +453,14 @@ if (existsSync(outputFilePathUnique)) {
 console.log('Step 5, updating mysql database');
 const cmdUpdate = `INSERT INTO \`logs\` (\`day\`, \`status\`, \`r2_path\`) VALUES ('${dateDirectory}', 'downloaded', 's3://${bucketNameClean}/${dateDirectory}.txt')`;
 
-// const fileExists = await doesS3Exist(bucketNameClean, `${dateDirectory}.txt`);
-// if (fileExists) {
-//   await sqlQuery(cmdUpdate, databaseGlobal, 'update');
-//   console.log('Database updated successfully');
-// } else {
-//   console.error('file push failed, you cannot add it into the database');
-//   process.exit(1);
-// }
+const fileExists = await doesS3Exist(bucketNameClean, `${dateDirectory}.txt`);
+if (fileExists) {
+  await sqlQuery(cmdUpdate, databaseGlobal, 'update');
+  console.log('Database updated successfully');
+} else {
+  console.error('file push failed, you cannot add it into the database');
+  process.exit(1);
+}
 
 // Remove duplicates from not found file
 removeDuplicatesFile(notFoundFile);
