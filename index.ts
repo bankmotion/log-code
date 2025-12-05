@@ -304,14 +304,14 @@ const outputFilePathUnique = join(logDir, 'allinone_unique.txt');
 console.log('Step 1, cleaning existing files from previous iteration');
 // Only remove the log directory if it exists, then recreate it
 if (existsSync(logDir)) {
-  removeDirectory(logDir);
+  // removeDirectory(logDir);
 }
 ensureDirectoryExists(logDir);
 ensureDirectoryExists(outputDirectory);
 
 // Step 2: Download from source
 console.log('Step 2, downloading from the source');
-await downloadFolder(bucketName, dateDirectory, directory);
+// await downloadFolder(bucketName, dateDirectory, directory);
 
 // Step 2: Analyze files (Python labels this as "Step 2" but it's actually step 3)
 console.log('Step 2.5, analyzing the files');
