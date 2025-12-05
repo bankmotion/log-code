@@ -140,7 +140,7 @@ async function getAZNudePageID(filePath: string, gender: string, stringType: str
         });
         
         if (!response.ok) {
-          console.warn(`HTTP ${response.status} for ${url}`);
+          // HTTP error (404, etc.) - silently return unidentified
           return 'unidentified';
         }
         

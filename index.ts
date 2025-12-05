@@ -388,30 +388,108 @@ async function processBatchSSHChecks(
       .sort();
     console.log(`[${genderType}][${dateDirectory}] Found ${files.length} log files to process`);
 
-    let fileIndex = 0;
-    for (const fileName of files) {
-      fileIndex++;
-      const filePath = join(directory, fileName);
-      console.log(`[${genderType}][${dateDirectory}] Processing file ${fileIndex}/${files.length}: ${fileName}`);
+    // Process files in batches for better performance
+    const FILE_BATCH_SIZE = 100;
+    let totalProcessed = 0;
+    let totalErrors = 0;
+
+    for (let i = 0; i < files.length; i += FILE_BATCH_SIZE) {
+      const batch = files.slice(i, i + FILE_BATCH_SIZE);
+      const batchNumber = Math.floor(i / FILE_BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(files.length / FILE_BATCH_SIZE);
       
-      const entryFetch = await parseLargeJsonFile(filePath);
-      // Python: temp_out_file = output_directory + file_path.split('/')[-1]
-      // This gets just the filename from the full path
-      const tempOutFile = join(outputDirectory, fileName);
+      console.log(`[${genderType}][${dateDirectory}] Processing batch ${batchNumber}/${totalBatches} (${batch.length} files)...`);
+      
+      const batchStartTime = Date.now();
+      
+      // Process batch in parallel
+      const batchPromises = batch.map(async (fileName) => {
+        try {
+          const filePath = join(directory, fileName);
+          const entryFetch = await parseLargeJsonFile(filePath);
+          
+          // Python: temp_out_file = output_directory + file_path.split('/')[-1]
+          // This gets just the filename from the full path
+          const tempOutFile = join(outputDirectory, fileName);
 
-      console.log(tempOutFile);
-      const outputLines: string[] = [];
-      for (const entry of entryFetch) {
-        // Python prints the entry before writing
-        console.log(entry);
-        const jsonString = JSON.stringify(entry);
-        outputLines.push(jsonString);
+          const outputLines: string[] = [];
+          for (const entry of entryFetch) {
+            // Python prints the entry before writing, but we skip it for cleaner logs
+            const jsonString = JSON.stringify(entry);
+            outputLines.push(jsonString);
+          }
+          writeFileSync(tempOutFile, outputLines.join('\n') + '\n');
+
+          // Remove duplicates
+          removeDuplicatesFile(tempOutFile);
+          
+          return { fileName, success: true, entryCount: entryFetch.length };
+        } catch (error: any) {
+          console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, error.message || error);
+          return { fileName, success: false, error: error.message || String(error), entryCount: 0 };
+        }
+      });
+
+      // Wait for all files in batch to complete
+      const batchResults = await Promise.all(batchPromises);
+      
+      // Count successes and errors
+      const batchSuccesses = batchResults.filter(r => r.success).length;
+      const batchErrors = batchResults.filter(r => !r.success).length;
+      const batchEntryCount = batchResults.reduce((sum, r) => sum + (r.entryCount || 0), 0);
+      
+      totalProcessed += batchSuccesses;
+      totalErrors += batchErrors;
+      
+      const batchEndTime = Date.now();
+      const batchDuration = ((batchEndTime - batchStartTime) / 1000).toFixed(1);
+      
+      // Log batch summary with record counts
+      console.log(`[${genderType}][${dateDirectory}] Batch ${batchNumber} completed:`);
+      console.log(`  ✓ Files: ${batchSuccesses} success, ${batchErrors} errors`);
+      console.log(`  ✓ Records created: ${batchEntryCount.toLocaleString()}`);
+      console.log(`  ✓ Time: ${batchDuration}s`);
+      
+      // Log detailed record counts per file (only for successful files)
+      if (batchEntryCount > 0) {
+        const successfulFiles = batchResults.filter(r => r.success && r.entryCount > 0);
+        if (successfulFiles.length > 0) {
+          console.log(`  ✓ Record breakdown:`);
+          successfulFiles.forEach(r => {
+            console.log(`    - ${r.fileName}: ${r.entryCount.toLocaleString()} records`);
+          });
+        }
       }
-      writeFileSync(tempOutFile, outputLines.join('\n') + '\n');
-
-      // Remove duplicates
-      removeDuplicatesFile(tempOutFile);
+      
+      // Log any errors
+      if (batchErrors > 0) {
+        console.log(`  ✗ Failed files:`);
+        const failedFiles = batchResults.filter(r => !r.success);
+        failedFiles.forEach(r => {
+          console.error(`    - ${r.fileName}: ${r.error}`);
+        });
+      }
     }
+
+    // Calculate total records across all batches
+    let totalRecords = 0;
+    for (const fileName of files) {
+      const tempOutFile = join(outputDirectory, fileName);
+      if (existsSync(tempOutFile)) {
+        try {
+          const content = readFileSync(tempOutFile, 'utf-8');
+          const lines = content.split('\n').filter(line => line.trim());
+          totalRecords += lines.length;
+        } catch (error) {
+          // Skip if file can't be read
+        }
+      }
+    }
+    
+    console.log(`\n[${genderType}][${dateDirectory}] 📊 File Processing Summary:`);
+    console.log(`  ✓ Files processed: ${totalProcessed}/${files.length} successful`);
+    console.log(`  ✗ Files failed: ${totalErrors}`);
+    console.log(`  📝 Total records created: ${totalRecords.toLocaleString()}`);
 
     // Step 3: Merge all files
     console.log(`[${genderType}][${dateDirectory}] Step 3: Merging all files into one`);
