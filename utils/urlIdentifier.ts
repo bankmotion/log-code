@@ -3,6 +3,7 @@ import { sqlQuery, escapeHardcodedValues } from './database.js';
 import { config } from '../config.js';
 import { bashCommand } from './fileUtils.js';
 import type { RowDataPacket } from 'mysql2/promise';
+import { load } from 'cheerio';
 
 // Static pages that should be ignored
 const STATIC_PAGES: string[] = [
@@ -119,13 +120,173 @@ async function addToHtmlMap(
   return 'success';
 }
 
-// This function needs to be implemented based on your getAZNudePageID logic
-// For now, it's a placeholder
-async function getAZNudePageID(_filePath: string, _gender: string, _stringType: string, _source: string): Promise<string> {
-  // This would need to parse HTML files to extract IDs
-  // Implementation depends on your specific HTML structure
-  // For now, return a placeholder
-  throw new Error('getAZNudePageID not implemented - needs HTML parsing logic');
+// This function extracts the element ID from HTML files
+// It fetches HTML via HTTP/HTTPS using the actual URL instead of SSH
+async function getAZNudePageID(filePath: string, gender: string, stringType: string, source: string, host?: string, uri?: string): Promise<string> {
+  try {
+    let htmlContent: string;
+    
+    // If we have host and uri, fetch via HTTP/HTTPS (better than SSH)
+    if (host && uri) {
+      try {
+        const url = `https://${host}${uri}`;
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; LogProcessor/1.0)',
+          },
+          // Timeout after 10 seconds
+          signal: AbortSignal.timeout(10000)
+        });
+        
+        if (!response.ok) {
+          console.warn(`HTTP ${response.status} for ${url}`);
+          return 'unidentified';
+        }
+        
+        htmlContent = await response.text();
+      } catch (fetchError: any) {
+        // Fetch failed - try local file or return unidentified
+        console.warn(`Failed to fetch ${host}${uri}:`, fetchError.message);
+        
+        // Fallback: try reading as local file if path exists
+        if (filePath && !filePath.startsWith('/var/www')) {
+          try {
+            const { readFileSync, existsSync } = await import('fs');
+            if (existsSync(filePath)) {
+              htmlContent = readFileSync(filePath, 'utf-8');
+            } else {
+              return 'unidentified';
+            }
+          } catch {
+            return 'unidentified';
+          }
+        } else {
+          return 'unidentified';
+        }
+      }
+    } else {
+      // No host/uri provided - try local file or SSH as last resort
+      if (filePath.startsWith('/var/www') || (filePath.startsWith('/') && !filePath.startsWith('./'))) {
+        // Remote server path - try SSH only if configured
+        if (config.LEASEWEB_SERVER_SSH && config.LEASEWEB_SERVER_SSH !== 'ssh user@server' && config.LEASEWEB_SERVER_SSH.includes('@')) {
+          try {
+            const command = `${config.LEASEWEB_SERVER_SSH} cat ${filePath}`;
+            htmlContent = bashCommand(command);
+          } catch (sshError) {
+            console.warn(`SSH command failed for ${filePath}`);
+            return 'unidentified';
+          }
+        } else {
+          return 'unidentified';
+        }
+      } else {
+        // Local path - read directly
+        const { readFileSync } = await import('fs');
+        htmlContent = readFileSync(filePath, 'utf-8');
+      }
+    }
+    
+    if (!htmlContent || htmlContent.trim().length === 0) {
+      return 'invalid';
+    }
+    
+    // Parse HTML using cheerio for reliable extraction
+    const $ = load(htmlContent);
+    let id: string | null = null;
+    
+    // Method 1: Try meta tag with name="celebid" or similar
+    const metaId = $(`meta[name="${stringType}id"]`).attr('content') || 
+                   $(`meta[name="${stringType}_id"]`).attr('content') ||
+                   $(`meta[name="${stringType}-id"]`).attr('content');
+    if (metaId) {
+      id = metaId.trim();
+    }
+    
+    // Method 2: Try data attributes
+    if (!id) {
+      const dataId = $(`[data-${stringType}id]`).attr(`data-${stringType}id`) ||
+                     $(`[data-${stringType}_id]`).attr(`data-${stringType}_id`) ||
+                     $(`[data-${stringType}-id]`).attr(`data-${stringType}-id`);
+      if (dataId) {
+        id = dataId.trim();
+      }
+    }
+    
+    // Method 3: Try hidden input fields
+    if (!id) {
+      const inputId = $(`input[name="${stringType}id"]`).attr('value') ||
+                      $(`input[name="${stringType}_id"]`).attr('value') ||
+                      $(`input[name="${stringType}-id"]`).attr('value');
+      if (inputId) {
+        id = inputId.trim();
+      }
+    }
+    
+    // Method 4: Try JavaScript variables in script tags
+    if (!id) {
+      const scripts = $('script').toArray();
+      for (const script of scripts) {
+        const scriptContent = $(script).html() || '';
+        const patterns = [
+          new RegExp(`var\\s+${stringType}id\\s*=\\s*["']([^"']+)["']`, 'i'),
+          new RegExp(`const\\s+${stringType}id\\s*=\\s*["']([^"']+)["']`, 'i'),
+          new RegExp(`let\\s+${stringType}id\\s*=\\s*["']([^"']+)["']`, 'i'),
+          new RegExp(`${stringType}id\\s*[:=]\\s*["']([^"']+)["']`, 'i'),
+          new RegExp(`["']${stringType}id["']\\s*:\\s*["']([^"']+)["']`, 'i'),
+        ];
+        
+        for (const pattern of patterns) {
+          const match = scriptContent.match(pattern);
+          if (match && match[1]) {
+            id = match[1].trim();
+            break;
+          }
+        }
+        if (id) break;
+      }
+    }
+    
+    // Method 5: Try to find ID in body data attributes or common locations
+    if (!id) {
+      const bodyId = $('body').attr(`data-${stringType}id`) ||
+                     $('body').attr(`data-${stringType}_id`) ||
+                     $('body').attr(`data-${stringType}-id`);
+      if (bodyId) {
+        id = bodyId.trim();
+      }
+    }
+    
+    // Method 6: Fallback - search for numeric IDs in the HTML content
+    if (!id) {
+      // Look for patterns like "celebid": "12345" or celebid="12345"
+      const fallbackPatterns = [
+        new RegExp(`["']${stringType}id["']\\s*[:=]\\s*["']?(\\d+)["']?`, 'i'),
+        new RegExp(`${stringType}id\\s*=\\s*["']?(\\d+)["']?`, 'i'),
+        new RegExp(`id\\s*[:=]\\s*["']?(\\d{4,})["']?`, 'i'), // At least 4 digits
+      ];
+      
+      for (const pattern of fallbackPatterns) {
+        const match = htmlContent.match(pattern);
+        if (match && match[1]) {
+          id = match[1].trim();
+          break;
+        }
+      }
+    }
+    
+    if (id && id !== 'invalid' && id !== '' && !isNaN(Number(id))) {
+      return id;
+    }
+    
+    return 'invalid';
+  } catch (error) {
+    console.error('Error in getAZNudePageID:', error);
+    console.error('File path:', filePath);
+    console.error('Gender:', gender);
+    console.error('Type:', stringType);
+    return 'invalid';
+  }
 }
 
 function getSiteConfig(host: string): SiteConfig | null {
@@ -368,8 +529,8 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
 
     let elementId: string;
     try {
-      // This function needs to be implemented
-      elementId = await getAZNudePageID(dir + uri, gender, stringType, 'cloudflarelog');
+      // Pass host and uri so we can fetch via HTTP instead of SSH
+      elementId = await getAZNudePageID(dir + uri, gender, stringType, 'cloudflarelog', host, uri);
     } catch (error) {
       console.error('Error getting page ID:', error);
       console.error('Host:', host);
@@ -380,8 +541,9 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       return 'unidentified';
     }
 
-    if (elementId === 'invalid') {
-      return 'invalid';
+    if (elementId === 'invalid' || elementId === 'unidentified' || !elementId) {
+      // If we can't extract the ID, return 'unidentified' (don't query with 'unidentified' as ID)
+      return 'unidentified';
     }
 
     let query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${elementId}' LIMIT 1;`;

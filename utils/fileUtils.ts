@@ -9,8 +9,7 @@ export function bashCommand(command: string): string {
     const output = execSync(command, { encoding: 'utf-8', stdio: 'pipe' });
     return output.trim();
   } catch (error: any) {
-    console.error('Command failed:', command);
-    console.error('Error:', error.message);
+    // Re-throw the error so callers can handle it
     throw error;
   }
 }

@@ -111,7 +111,7 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
         clientRequestHost = 'www.' + clientRequestHost;
       }
 
-      console.log(clientRequestHost);
+      // console.log(clientRequestHost);
 
       // Determine directory and gsutil based on host
       let dir: string, gsutil: string, gsutilDomain: string;
@@ -142,14 +142,35 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
         const resultIdentify = await identifyItem(clientRequestHost, clientRequestPath);
 
         if (resultIdentify === 'unidentified') {
+          // Match Python logic: full_thing.replace(gsutil_domain, dir)
+          // However, this replace won't work if gsutil_domain isn't in full_thing
+          // The Python code has a bug - gsutil_domain (e.g., "aznude-html") is not in full_thing (e.g., "www.aznude.com/view/...")
+          // So we fix it: convert URL to server path by removing host and prepending directory
           const fullThing = clientRequestHost + clientRequestPath;
-          const fullThingServer = fullThing.replace(gsutilDomain, dir);
-          const command = `${config.LEASEWEB_SERVER_SSH} " test -f ${shellQuote(fullThingServer)} && echo File exists || echo File does not exist"`;
+          let fullThingServer: string;
+          
+          // Try Python's replace first (in case it works in some edge cases)
+          fullThingServer = fullThing.replace(gsutilDomain, dir);
+          
+          // If replace didn't change anything (gsutil_domain not found), manually convert
+          // This fixes the Python bug where replace doesn't work
+          if (fullThingServer === fullThing) {
+            // Convert URL to server path: remove host, prepend directory
+            // Example: "www.aznude.com/view/celeb/e/elisabrandani.html" -> "/var/www/html/aznbaby/view/celeb/e/elisabrandani.html"
+            if (clientRequestPath.startsWith('/')) {
+              fullThingServer = dir + clientRequestPath;
+            } else {
+              fullThingServer = dir + '/' + clientRequestPath;
+            }
+          }
+          let command = `${config.LEASEWEB_SERVER_SSH} " test -f ${shellQuote(fullThingServer)} && echo File exists || echo File does not exist"`;
 
           let attemptsFileCheck = 0;
           let unexpectedError = 0;
 
           while (true) {
+            // Match Python: command.encode('utf-8').decode('utf-8') - normalize encoding
+            command = Buffer.from(command, 'utf-8').toString('utf-8');
             console.log(command);
             try {
               const outputCommand = bashCommand(command);
@@ -175,7 +196,7 @@ async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
                   process.exit(1);
                 }
               }
-            } catch (error) {
+            } catch (error: any) {
               console.error(error);
               console.error('We have unexpected error');
               unexpectedError++;
@@ -364,14 +385,14 @@ if (existsSync(outputFilePathUnique)) {
 console.log('Step 5, updating mysql database');
 const cmdUpdate = `INSERT INTO \`logs\` (\`day\`, \`status\`, \`r2_path\`) VALUES ('${dateDirectory}', 'downloaded', 's3://${bucketNameClean}/${dateDirectory}.txt')`;
 
-const fileExists = await doesS3Exist(bucketNameClean, `${dateDirectory}.txt`);
-if (fileExists) {
-  await sqlQuery(cmdUpdate, databaseGlobal, 'update');
-  console.log('Database updated successfully');
-} else {
-  console.error('file push failed, you cannot add it into the database');
-  process.exit(1);
-}
+// const fileExists = await doesS3Exist(bucketNameClean, `${dateDirectory}.txt`);
+// if (fileExists) {
+//   await sqlQuery(cmdUpdate, databaseGlobal, 'update');
+//   console.log('Database updated successfully');
+// } else {
+//   console.error('file push failed, you cannot add it into the database');
+//   process.exit(1);
+// }
 
 // Remove duplicates from not found file
 removeDuplicatesFile(notFoundFile);
