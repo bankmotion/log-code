@@ -460,14 +460,14 @@ async function processBatchSSHChecks(
     console.log(`[${genderType}][${dateDirectory}] Step 1: Cleaning existing files from previous iteration`);
     // Only remove the log directory if it exists, then recreate it
     if (existsSync(logDir)) {
-      // removeDirectory(logDir);
+      removeDirectory(logDir);
     }
     ensureDirectoryExists(logDir);
     ensureDirectoryExists(outputDirectory);
 
     // Step 2: Download from source
     console.log(`[${genderType}][${dateDirectory}] Step 2: Downloading from source (bucket: ${bucketName})`);
-    // await downloadFolder(bucketName, dateDirectory, directory);
+    await downloadFolder(bucketName, dateDirectory, directory);
     console.log(`[${genderType}][${dateDirectory}] Download completed`);
 
     // Step 2: Analyze files (Python labels this as "Step 2" but it's actually step 3)
