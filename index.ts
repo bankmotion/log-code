@@ -27,9 +27,41 @@ interface LogEntry {
 
 // Process a single gender
 async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
+  // Setup logging for this gender - save to logs/daily/{gender}/{date}/
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const genderLogDir = join('logs', 'daily', genderType, today);
+  ensureDirectoryExists(genderLogDir);
+  
+  const genderLogFilePath = join(genderLogDir, 'processing.log');
+  const genderLogStream = createWriteStream(genderLogFilePath, { flags: 'a' });
+  
+  // Override console methods to write to gender-specific log file
+  const originalLog = console.log.bind(console);
+  const originalWarn = console.warn.bind(console);
+  const originalError = console.error.bind(console);
+  
+  function writeToGenderLog(level: string, ...args: any[]) {
+    const timestamp = new Date().toISOString();
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+    ).join(' ');
+    const logLine = `[${timestamp}] [${level}] ${message}\n`;
+    genderLogStream.write(logLine);
+    
+    // Also output to console
+    if (level === 'LOG') originalLog(...args);
+    else if (level === 'WARN') originalWarn(...args);
+    else if (level === 'ERROR') originalError(...args);
+  }
+  
+  console.log = (...args: any[]) => writeToGenderLog('LOG', ...args);
+  console.warn = (...args: any[]) => writeToGenderLog('WARN', ...args);
+  console.error = (...args: any[]) => writeToGenderLog('ERROR', ...args);
+  
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Processing gender: ${genderType}`);
-  console.log(`${'='.repeat(60)}\n`);
+  console.log(`${'='.repeat(60)}`);
+  console.log(`📝 Logging to: ${genderLogFilePath}\n`);
   
   const startTime = Date.now();
 
@@ -578,49 +610,21 @@ async function processBatchSSHChecks(
   console.log(`  Successful: ${successCount}`);
   console.log(`  Failed: ${failedCount}`);
   console.log(`  Total time: ${totalDuration}s`);
-  console.log(`${'='.repeat(60)}\n`);
-}
-
-// Logging setup - write all logs to file per day
-const logDirForFiles = config.directories.CLOUDFLARE_LOG_DIR.startsWith('./') 
-  ? config.directories.CLOUDFLARE_LOG_DIR 
-  : config.directories.CLOUDFLARE_LOG_DIR;
-ensureDirectoryExists(logDirForFiles);
-
-// Create log file with current date (YYYYMMDD format)
-const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-const logFilePath = join(logDirForFiles, `processing-${today}.log`);
-const logStream = createWriteStream(logFilePath, { flags: 'a' });
-
-// Override console methods to also write to file
-const originalLog = console.log.bind(console);
-const originalWarn = console.warn.bind(console);
-const originalError = console.error.bind(console);
-
-function writeToLog(level: string, ...args: any[]) {
-  const timestamp = new Date().toISOString();
-  const message = args.map(arg => 
-    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-  ).join(' ');
-  const logLine = `[${timestamp}] [${level}] ${message}\n`;
-  logStream.write(logLine);
+  console.log(`${'='.repeat(60)}`);
+  console.log(`📝 Log saved to: ${genderLogFilePath}\n`);
   
-  // Also output to console
-  if (level === 'LOG') originalLog(...args);
-  else if (level === 'WARN') originalWarn(...args);
-  else if (level === 'ERROR') originalError(...args);
+  // Close gender log stream and restore original console
+  genderLogStream.end();
+  console.log = originalLog;
+  console.warn = originalWarn;
+  console.error = originalError;
 }
-
-console.log = (...args: any[]) => writeToLog('LOG', ...args);
-console.warn = (...args: any[]) => writeToLog('WARN', ...args);
-console.error = (...args: any[]) => writeToLog('ERROR', ...args);
 
 // Main execution
 const mainStartTime = Date.now();
 console.log('\n' + '='.repeat(60));
 console.log('🚀 Starting log processing system');
 console.log('='.repeat(60));
-console.log(`📝 Logging to: ${logFilePath}`);
 
 // Load HTML map associations (shared across all genders)
 console.log('\n📋 Loading HTML map associations...');
@@ -655,8 +659,4 @@ genderResults.forEach(result => {
   console.log(`  ${status} ${result.gender}${result.error ? ` (Error: ${result.error})` : ''}`);
 });
 console.log('='.repeat(60));
-console.log('✨ All processing complete!');
-console.log(`📝 Full log saved to: ${logFilePath}\n`);
-
-// Close log stream
-logStream.end();
+console.log('✨ All processing complete!\n');
