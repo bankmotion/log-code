@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { readdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync, createWriteStream } from 'fs';
+import type { WriteStream } from 'fs';
 import { join } from 'path';
 import crypto from 'crypto';
 import { config } from './config.js';
@@ -27,43 +28,56 @@ interface LogEntry {
 
 // Process a single gender
 async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
-  // Setup logging for this gender - save to logs/daily/{gender}/{date}/
-  const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const genderLogDir = join('logs', 'daily', genderType, today);
-  ensureDirectoryExists(genderLogDir);
+  const startTime = Date.now();
   
-  const genderLogFilePath = join(genderLogDir, 'processing.log');
-  const genderLogStream = createWriteStream(genderLogFilePath, { flags: 'a' });
-  
-  // Override console methods to write to gender-specific log file
+  // Store original console methods
   const originalLog = console.log.bind(console);
   const originalWarn = console.warn.bind(console);
   const originalError = console.error.bind(console);
   
-  function writeToGenderLog(level: string, ...args: any[]) {
-    const timestamp = new Date().toISOString();
-    const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ');
-    const logLine = `[${timestamp}] [${level}] ${message}\n`;
-    genderLogStream.write(logLine);
-    
-    // Also output to console
-    if (level === 'LOG') originalLog(...args);
-    else if (level === 'WARN') originalWarn(...args);
-    else if (level === 'ERROR') originalError(...args);
-  }
+  // Will be set up per date folder
+  let currentLogStream: WriteStream | null = null;
+  let currentLogFilePath: string | null = null;
   
-  console.log = (...args: any[]) => writeToGenderLog('LOG', ...args);
-  console.warn = (...args: any[]) => writeToGenderLog('WARN', ...args);
-  console.error = (...args: any[]) => writeToGenderLog('ERROR', ...args);
+  // Function to setup logging for a specific date
+  function setupDateLogging(dateDirectory: string) {
+    // Close previous log stream if exists
+    if (currentLogStream !== null) {
+      currentLogStream.end();
+      currentLogStream = null;
+    }
+    
+    // Setup logging for this date - save to logs/daily/{gender}/{date}/
+    const dateLogDir = join('logs', 'daily', genderType, dateDirectory);
+    ensureDirectoryExists(dateLogDir);
+    
+    currentLogFilePath = join(dateLogDir, 'processing.log');
+    currentLogStream = createWriteStream(currentLogFilePath, { flags: 'a' }) as WriteStream;
+    
+    function writeToDateLog(level: string, ...args: any[]) {
+      if (!currentLogStream) return;
+      
+      const timestamp = new Date().toISOString();
+      const message = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+      ).join(' ');
+      const logLine = `[${timestamp}] [${level}] ${message}\n`;
+      currentLogStream.write(logLine);
+      
+      // Also output to console
+      if (level === 'LOG') originalLog(...args);
+      else if (level === 'WARN') originalWarn(...args);
+      else if (level === 'ERROR') originalError(...args);
+    }
+    
+    console.log = (...args: any[]) => writeToDateLog('LOG', ...args);
+    console.warn = (...args: any[]) => writeToDateLog('WARN', ...args);
+    console.error = (...args: any[]) => writeToDateLog('ERROR', ...args);
+  }
   
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Processing gender: ${genderType}`);
-  console.log(`${'='.repeat(60)}`);
-  console.log(`📝 Logging to: ${genderLogFilePath}\n`);
-  
-  const startTime = Date.now();
+  console.log(`${'='.repeat(60)}\n`);
 
   let bucketName: string;
   let bucketNameClean: string;
@@ -402,9 +416,14 @@ async function processBatchSSHChecks(
   for (const folder of filteredFolders) {
     const dateDirectory = folder.split('/').slice(-2, -1)[0];
     processedCount++;
+    
+    // Setup logging for this date folder
+    setupDateLogging(dateDirectory);
+    
     console.log(`\n${'='.repeat(60)}`);
     console.log(`[${genderType}] Processing folder ${processedCount}/${filteredFolders.length}: ${dateDirectory}`);
-    console.log(`${'='.repeat(60)}\n`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`📝 Logging to: ${currentLogFilePath}\n`);
     
     const folderStartTime = Date.now();
 
@@ -667,11 +686,13 @@ async function processBatchSSHChecks(
   console.log(`  Successful: ${successCount}`);
   console.log(`  Failed: ${failedCount}`);
   console.log(`  Total time: ${totalDuration}s`);
-  console.log(`${'='.repeat(60)}`);
-  console.log(`📝 Log saved to: ${genderLogFilePath}\n`);
+  console.log(`${'='.repeat(60)}\n`);
   
-  // Close gender log stream and restore original console
-  genderLogStream.end();
+  // Close current log stream and restore original console
+  if (currentLogStream) {
+    (currentLogStream as WriteStream).end();
+    currentLogStream = null;
+  }
   console.log = originalLog;
   console.warn = originalWarn;
   console.error = originalError;
