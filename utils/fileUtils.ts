@@ -20,8 +20,9 @@ export function bashCommand(command: string, timeout: number = 30000): string {
 }
 
 export function shellQuote(str: string): string {
-  // Simple shell quoting - escape single quotes
-  return `'${str.replace(/'/g, "'\"'\"'")}'`;
+  // Use double quotes and escape special characters
+  // Escape: $ ` " \ and newlines
+  return `"${str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`').replace(/\n/g, '\\n')}"`;
 }
 
 export function removeDuplicatesFile(filePath: string): void {

@@ -259,9 +259,12 @@ async function processBatchSSHChecks(
   }
   
   // Build a single SSH command that checks all files
-  // Format: ssh user@host "for file in 'path1' 'path2' ...; do test -f \"$file\" && echo \"EXISTS:$file\" || echo \"NOTEXISTS:$file\"; done"
+  // Use a safer approach: properly escape paths and use sh -c with single quotes
+  // This avoids quote nesting issues with special characters like single quotes
   const filePaths = files.map(f => shellQuote(f.serverPath)).join(' ');
-  const command = `${config.LEASEWEB_SERVER_SSH} "for file in ${filePaths}; do test -f \"\\$file\" && echo \"EXISTS:\\$file\" || echo \"NOTEXISTS:\\$file\"; done"`;
+  // Use sh -c with single quotes, paths are already double-quoted by shellQuote
+  // The single quotes around the sh -c command protect it from the outer shell
+  const command = `${config.LEASEWEB_SERVER_SSH} sh -c 'for file in ${filePaths}; do test -f "$file" && echo "EXISTS:$file" || echo "NOTEXISTS:$file"; done'`;
   
   let attemptsFileCheck = 0;
   let unexpectedError = 0;
