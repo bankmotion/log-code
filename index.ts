@@ -259,12 +259,28 @@ async function processBatchSSHChecks(
   }
   
   // Build a single SSH command that checks all files
-  // Use a safer approach: properly escape paths and use sh -c with single quotes
-  // This avoids quote nesting issues with special characters like single quotes
-  const filePaths = files.map(f => shellQuote(f.serverPath)).join(' ');
-  // Use sh -c with single quotes, paths are already double-quoted by shellQuote
-  // The single quotes around the sh -c command protect it from the outer shell
-  const command = `${config.LEASEWEB_SERVER_SSH} sh -c 'for file in ${filePaths}; do test -f "$file" && echo "EXISTS:$file" || echo "NOTEXISTS:$file"; done'`;
+  // Use a simpler approach: escape paths properly and construct the command
+  // Structure: ssh ... "sh -c 'for file in ...; do ...; done'"
+  const filePaths = files.map(f => f.serverPath);
+  
+  // Escape each path: replace ' with '\'' (end quote, escaped quote, start quote)
+  // Then wrap in single quotes
+  const escapedPaths = filePaths.map(path => {
+    const escaped = path.replace(/'/g, "'\\''");
+    return `'${escaped}'`;
+  }).join(' ');
+  
+  // Build the for loop command
+  // Inside single quotes, we need to escape: $ becomes \$ (for variables)
+  const forLoop = `for file in ${escapedPaths}; do test -f "\\$file" && echo "EXISTS:\\$file" || echo "NOTEXISTS:\\$file"; done`;
+  
+  // Now wrap in single quotes for sh -c, escaping any single quotes in forLoop
+  // Single quotes in forLoop need to become: ' becomes '\'' 
+  const escapedForLoop = forLoop.replace(/'/g, "'\\''");
+  
+  // Final command: ssh ... "sh -c '...'"
+  // Outer double quotes for SSH, inner single quotes for sh -c
+  const command = `${config.LEASEWEB_SERVER_SSH} "sh -c '${escapedForLoop}'"`;
   
   let attemptsFileCheck = 0;
   let unexpectedError = 0;
@@ -444,14 +460,14 @@ async function processBatchSSHChecks(
     console.log(`[${genderType}][${dateDirectory}] Step 1: Cleaning existing files from previous iteration`);
     // Only remove the log directory if it exists, then recreate it
     if (existsSync(logDir)) {
-      removeDirectory(logDir);
+      // removeDirectory(logDir);
     }
     ensureDirectoryExists(logDir);
     ensureDirectoryExists(outputDirectory);
 
     // Step 2: Download from source
     console.log(`[${genderType}][${dateDirectory}] Step 2: Downloading from source (bucket: ${bucketName})`);
-    await downloadFolder(bucketName, dateDirectory, directory);
+    // await downloadFolder(bucketName, dateDirectory, directory);
     console.log(`[${genderType}][${dateDirectory}] Download completed`);
 
     // Step 2: Analyze files (Python labels this as "Step 2" but it's actually step 3)
