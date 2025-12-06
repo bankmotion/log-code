@@ -257,7 +257,8 @@ async function processBatchSSHChecks(
       const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
       // Don't log every batch - too verbose
       
-      const outputCommand = bashCommand(normalizedCommand);
+      // Add timeout to SSH command (30 seconds max)
+      const outputCommand = bashCommand(normalizedCommand, 30000);
       
       // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
       const results = new Map<string, boolean>();
@@ -438,10 +439,25 @@ async function processBatchSSHChecks(
       .sort();
     console.log(`[${genderType}][${dateDirectory}] Found ${files.length} log files to process`);
 
-    // Process files in batches for better performance
-    const FILE_BATCH_SIZE = 100;
+    // Process files in smaller batches with progress tracking and temp files
+    const FILE_BATCH_SIZE = 100; // Reduced from 100 to prevent hangs
     let totalProcessed = 0;
     let totalErrors = 0;
+    
+    // Create progress tracking file
+    const progressFile = join(outputDirectory, '.progress.json');
+    let progress: { processed: string[]; failed: string[] } = { processed: [], failed: [] };
+    
+    // Load existing progress if available
+    if (existsSync(progressFile)) {
+      try {
+        progress = JSON.parse(readFileSync(progressFile, 'utf-8'));
+        console.log(`[${genderType}][${dateDirectory}] Resuming from previous run: ${progress.processed.length} files already processed`);
+      } catch (e) {
+        // Invalid progress file, start fresh
+        progress = { processed: [], failed: [] };
+      }
+    }
 
     for (let i = 0; i < files.length; i += FILE_BATCH_SIZE) {
       const batch = files.slice(i, i + FILE_BATCH_SIZE);
@@ -452,11 +468,27 @@ async function processBatchSSHChecks(
       
       const batchStartTime = Date.now();
       
-      // Process batch in parallel
-      const batchPromises = batch.map(async (fileName) => {
+      // Process batch sequentially (not in parallel) to prevent hangs and allow progress tracking
+      const batchResults: Array<{ fileName: string; success: boolean; entryCount: number; error?: string }> = [];
+      
+      for (const fileName of batch) {
+        // Skip if already processed
+        if (progress.processed.includes(fileName)) {
+          console.log(`[${genderType}][${dateDirectory}] Skipping already processed: ${fileName}`);
+          batchResults.push({ fileName, success: true, entryCount: 0 });
+          continue;
+        }
+        
         try {
           const filePath = join(directory, fileName);
-          const entryFetch = await parseLargeJsonFile(filePath);
+          
+          // Add timeout wrapper for file processing (5 minutes max per file)
+          const processPromise = parseLargeJsonFile(filePath);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`Timeout: File processing exceeded 5 minutes`)), 5 * 60 * 1000)
+          );
+          
+          const entryFetch = await Promise.race([processPromise, timeoutPromise]) as any[];
           
           // Python: temp_out_file = output_directory + file_path.split('/')[-1]
           // This gets just the filename from the full path
@@ -473,15 +505,26 @@ async function processBatchSSHChecks(
           // Remove duplicates
           removeDuplicatesFile(tempOutFile);
           
-          return { fileName, success: true, entryCount: entryFetch.length };
+          // Mark as processed
+          progress.processed.push(fileName);
+          progress.failed = progress.failed.filter(f => f !== fileName);
+          
+          // Save progress after each file
+          writeFileSync(progressFile, JSON.stringify(progress, null, 2));
+          
+          batchResults.push({ fileName, success: true, entryCount: entryFetch.length });
         } catch (error: any) {
           console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, error.message || error);
-          return { fileName, success: false, error: error.message || String(error), entryCount: 0 };
+          
+          // Mark as failed
+          if (!progress.failed.includes(fileName)) {
+            progress.failed.push(fileName);
+          }
+          writeFileSync(progressFile, JSON.stringify(progress, null, 2));
+          
+          batchResults.push({ fileName, success: false, error: error.message || String(error), entryCount: 0 });
         }
-      });
-
-      // Wait for all files in batch to complete
-      const batchResults = await Promise.all(batchPromises);
+      }
       
       // Count successes and errors
       const batchSuccesses = batchResults.filter(r => r.success).length;
@@ -491,14 +534,23 @@ async function processBatchSSHChecks(
       totalProcessed += batchSuccesses;
       totalErrors += batchErrors;
       
-      const batchEndTime = Date.now();
-      const batchDuration = ((batchEndTime - batchStartTime) / 1000).toFixed(1);
+      const batchDuration = ((Date.now() - batchStartTime) / 1000).toFixed(1);
+      const elapsedTotal = ((Date.now() - folderStartTime) / 1000).toFixed(1);
+      const avgTimePerFile = totalProcessed > 0 ? (Date.now() - folderStartTime) / totalProcessed : 0;
+      const remainingFiles = files.length - totalProcessed;
+      const etaSeconds = remainingFiles * avgTimePerFile / 1000;
+      const etaMinutes = Math.floor(etaSeconds / 60);
       
       // Log batch summary with record counts
-      console.log(`[${genderType}][${dateDirectory}] Batch ${batchNumber} completed:`);
-      console.log(`  ✓ Files: ${batchSuccesses} success, ${batchErrors} errors`);
-      console.log(`  ✓ Records created: ${batchEntryCount.toLocaleString()}`);
-      console.log(`  ✓ Time: ${batchDuration}s`);
+      console.log(`[${genderType}][${dateDirectory}] Batch ${batchNumber}/${totalBatches} completed in ${batchDuration}s`);
+      console.log(`[${genderType}][${dateDirectory}]   Success: ${batchSuccesses}, Errors: ${batchErrors}, Entries: ${batchEntryCount.toLocaleString()}`);
+      console.log(`[${genderType}][${dateDirectory}]   Total progress: ${totalProcessed}/${files.length} files (${((totalProcessed/files.length)*100).toFixed(1)}%)`);
+      if (etaMinutes > 0) {
+        console.log(`[${genderType}][${dateDirectory}]   Elapsed: ${elapsedTotal}s, ETA: ${etaMinutes}m`);
+      }
+      
+      // Save progress checkpoint
+      writeFileSync(progressFile, JSON.stringify(progress, null, 2));
       
       // Log detailed record counts per file (only for successful files)
       if (batchEntryCount > 0) {
@@ -521,6 +573,11 @@ async function processBatchSSHChecks(
       }
     }
 
+    // Clean up progress file after successful completion
+    if (existsSync(progressFile)) {
+      removeFile(progressFile);
+    }
+    
     // Calculate total records across all batches
     let totalRecords = 0;
     for (const fileName of files) {

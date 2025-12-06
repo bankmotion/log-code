@@ -4,9 +4,14 @@ import { createReadStream } from 'fs';
 import { createGunzip } from 'zlib';
 import { createInterface } from 'readline';
 
-export function bashCommand(command: string): string {
+export function bashCommand(command: string, timeout: number = 30000): string {
   try {
-    const output = execSync(command, { encoding: 'utf-8', stdio: 'pipe' });
+    const output = execSync(command, { 
+      encoding: 'utf-8', 
+      stdio: 'pipe',
+      timeout: timeout,
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+    });
     return output.trim();
   } catch (error: any) {
     // Re-throw the error so callers can handle it
