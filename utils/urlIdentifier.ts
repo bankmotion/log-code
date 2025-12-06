@@ -596,8 +596,7 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       return 'unidentified';
     }
   } else {
-    console.log('not identified: ' + host + uri);
-    console.log(host);
+    // Not identified - silently return (no logging needed)
     return 'unidentified';
   }
   
