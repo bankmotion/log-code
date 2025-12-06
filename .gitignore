@@ -16,6 +16,14 @@ logs/
 *.log
 *.log.gz
 
+# SSH keys - NEVER commit private keys!
+key/
+*.pem
+*.ppk
+id_rsa
+id_rsa.pub
+*.key
+
 # OS files
 .DS_Store
 Thumbs.db

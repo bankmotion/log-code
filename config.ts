@@ -79,6 +79,7 @@ export const config: Config = {
   },
 
   // SSH/Server commands
+  // Can specify SSH key file: ssh -i /path/to/key user@host
   LEASEWEB_SERVER_SSH: process.env.LEASEWEB_SERVER_SSH || 'ssh user@server',
 
   // Rclone configuration

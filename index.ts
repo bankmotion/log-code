@@ -274,8 +274,11 @@ async function processBatchSSHChecks(
           sshAuthFailed = true;
           console.warn(`\n[SSH] ⚠️  Authentication failed - SSH file existence checks will be skipped`);
           console.warn(`[SSH] Reason: Permission denied (publickey)`);
-          console.warn(`[SSH] To fix: Ensure SSH keys are set up for user in LEASEWEB_SERVER_SSH`);
-          console.warn(`[SSH] Current config: ${config.LEASEWEB_SERVER_SSH}\n`);
+          console.warn(`[SSH] Current config: ${config.LEASEWEB_SERVER_SSH}`);
+          console.warn(`[SSH] To fix:`);
+          console.warn(`[SSH]   1. Copy your private key to: ./key/id_rsa (in project root)`);
+          console.warn(`[SSH]   2. Update .env: LEASEWEB_SERVER_SSH="ssh -i ./key/id_rsa pavel@67.205.170.17"`);
+          console.warn(`[SSH]   3. On Linux/Mac: chmod 600 ./key/id_rsa (Windows doesn't need this)\n`);
         }
         break; // Skip batch, continue processing
       }
