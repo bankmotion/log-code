@@ -487,15 +487,11 @@ async function processBatchSSHChecks(
       
       const batchStartTime = Date.now();
       
-      // Process batch sequentially (not in parallel) to prevent hangs and allow progress tracking
-      const batchResults: Array<{ fileName: string; success: boolean; entryCount: number; error?: string }> = [];
-      
-      for (const fileName of batch) {
+      // Process batch in parallel with timeout protection
+      const batchPromises = batch.map(async (fileName) => {
         // Skip if already processed
         if (progress.processed.includes(fileName)) {
-          console.log(`[${genderType}][${dateDirectory}] Skipping already processed: ${fileName}`);
-          batchResults.push({ fileName, success: true, entryCount: 0 });
-          continue;
+          return { fileName, success: true, entryCount: 0 };
         }
         
         try {
@@ -503,11 +499,11 @@ async function processBatchSSHChecks(
           
           // Add timeout wrapper for file processing (5 minutes max per file)
           const processPromise = parseLargeJsonFile(filePath);
-          const timeoutPromise = new Promise((_, reject) => 
+          const timeoutPromise = new Promise<never>((_, reject) => 
             setTimeout(() => reject(new Error(`Timeout: File processing exceeded 5 minutes`)), 5 * 60 * 1000)
           );
           
-          const entryFetch = await Promise.race([processPromise, timeoutPromise]) as any[];
+          const entryFetch = await Promise.race([processPromise, timeoutPromise]);
           
           // Python: temp_out_file = output_directory + file_path.split('/')[-1]
           // This gets just the filename from the full path
@@ -528,10 +524,7 @@ async function processBatchSSHChecks(
           progress.processed.push(fileName);
           progress.failed = progress.failed.filter(f => f !== fileName);
           
-          // Save progress after each file
-          writeFileSync(progressFile, JSON.stringify(progress, null, 2));
-          
-          batchResults.push({ fileName, success: true, entryCount: entryFetch.length });
+          return { fileName, success: true, entryCount: entryFetch.length };
         } catch (error: any) {
           console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, error.message || error);
           
@@ -539,11 +532,16 @@ async function processBatchSSHChecks(
           if (!progress.failed.includes(fileName)) {
             progress.failed.push(fileName);
           }
-          writeFileSync(progressFile, JSON.stringify(progress, null, 2));
           
-          batchResults.push({ fileName, success: false, error: error.message || String(error), entryCount: 0 });
+          return { fileName, success: false, error: error.message || String(error), entryCount: 0 };
         }
-      }
+      });
+
+      // Wait for all files in batch to complete in parallel
+      const batchResults = await Promise.all(batchPromises);
+      
+      // Save progress after batch completes
+      writeFileSync(progressFile, JSON.stringify(progress, null, 2));
       
       // Count successes and errors
       const batchSuccesses = batchResults.filter(r => r.success).length;
