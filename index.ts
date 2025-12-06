@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { readdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
+import { readdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import crypto from 'crypto';
 import { config } from './config.js';
@@ -581,11 +581,46 @@ async function processBatchSSHChecks(
   console.log(`${'='.repeat(60)}\n`);
 }
 
+// Logging setup - write all logs to file per day
+const logDirForFiles = config.directories.CLOUDFLARE_LOG_DIR.startsWith('./') 
+  ? config.directories.CLOUDFLARE_LOG_DIR 
+  : config.directories.CLOUDFLARE_LOG_DIR;
+ensureDirectoryExists(logDirForFiles);
+
+// Create log file with current date (YYYYMMDD format)
+const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+const logFilePath = join(logDirForFiles, `processing-${today}.log`);
+const logStream = createWriteStream(logFilePath, { flags: 'a' });
+
+// Override console methods to also write to file
+const originalLog = console.log.bind(console);
+const originalWarn = console.warn.bind(console);
+const originalError = console.error.bind(console);
+
+function writeToLog(level: string, ...args: any[]) {
+  const timestamp = new Date().toISOString();
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  const logLine = `[${timestamp}] [${level}] ${message}\n`;
+  logStream.write(logLine);
+  
+  // Also output to console
+  if (level === 'LOG') originalLog(...args);
+  else if (level === 'WARN') originalWarn(...args);
+  else if (level === 'ERROR') originalError(...args);
+}
+
+console.log = (...args: any[]) => writeToLog('LOG', ...args);
+console.warn = (...args: any[]) => writeToLog('WARN', ...args);
+console.error = (...args: any[]) => writeToLog('ERROR', ...args);
+
 // Main execution
 const mainStartTime = Date.now();
 console.log('\n' + '='.repeat(60));
 console.log('🚀 Starting log processing system');
 console.log('='.repeat(60));
+console.log(`📝 Logging to: ${logFilePath}`);
 
 // Load HTML map associations (shared across all genders)
 console.log('\n📋 Loading HTML map associations...');
@@ -620,4 +655,8 @@ genderResults.forEach(result => {
   console.log(`  ${status} ${result.gender}${result.error ? ` (Error: ${result.error})` : ''}`);
 });
 console.log('='.repeat(60));
-console.log('✨ All processing complete!\n');
+console.log('✨ All processing complete!');
+console.log(`📝 Full log saved to: ${logFilePath}\n`);
+
+// Close log stream
+logStream.end();
