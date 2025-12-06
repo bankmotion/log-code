@@ -198,11 +198,19 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
 }
 
 // Batch process SSH file existence checks
+// Track if SSH has been tested and failed
+let sshAuthFailed = false;
+
 async function processBatchSSHChecks(
   files: Array<{ host: string; path: string; serverPath: string }>,
   notFoundFile: string
 ): Promise<void> {
   if (files.length === 0) return;
+  
+  // Skip SSH checks if authentication has already failed
+  if (sshAuthFailed) {
+    return; // Silently skip - SSH is not available
+  }
   
   // Build a single SSH command that checks all files
   // Format: ssh user@host "for file in 'path1' 'path2' ...; do test -f \"$file\" && echo \"EXISTS:$file\" || echo \"NOTEXISTS:$file\"; done"
@@ -215,7 +223,7 @@ async function processBatchSSHChecks(
   while (true) {
     try {
       const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
-      console.log(`Batch checking ${files.length} files via SSH...`);
+      // Don't log every batch - too verbose
       
       const outputCommand = bashCommand(normalizedCommand);
       
@@ -261,7 +269,14 @@ async function processBatchSSHChecks(
       // Check if it's a persistent SSH authentication error
       if (errorMessage.includes('Permission denied (publickey)') || 
           errorOutput.includes('Permission denied (publickey)')) {
-        console.warn(`SSH Authentication Failed for batch - skipping ${files.length} file checks`);
+        // Mark SSH as failed and only log once
+        if (!sshAuthFailed) {
+          sshAuthFailed = true;
+          console.warn(`\n[SSH] ⚠️  Authentication failed - SSH file existence checks will be skipped`);
+          console.warn(`[SSH] Reason: Permission denied (publickey)`);
+          console.warn(`[SSH] To fix: Ensure SSH keys are set up for user in LEASEWEB_SERVER_SSH`);
+          console.warn(`[SSH] Current config: ${config.LEASEWEB_SERVER_SSH}\n`);
+        }
         break; // Skip batch, continue processing
       }
       
