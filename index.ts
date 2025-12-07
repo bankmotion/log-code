@@ -854,7 +854,8 @@ await loadHtmlMap();
 console.log('✓ HTML map loaded successfully\n');
 
 // Process all genders sequentially: f, then m, then fans
-const genders: Array<'f' | 'm' | 'fans'> = ['f', 'm', 'fans'];
+// Currently disabled: 'm' and 'fans' - only processing 'f'
+const genders: Array<'f' | 'm' | 'fans'> = ['f'];
 const genderResults: Array<{ gender: string; success: boolean; error?: string }> = [];
 
 for (const gender of genders) {
