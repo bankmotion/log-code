@@ -51,9 +51,6 @@ if (r2AccessKeyId && r2SecretAccessKey && r2Endpoint) {
     },
     forcePathStyle: true, // Required for R2 (same as log-views)
   });
-  console.log(`[R2_CLIENT] R2 client initialized with endpoint: ${r2Endpoint}`);
-} else {
-  console.warn(`[R2_CLIENT] R2 client not initialized - missing credentials. Check R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT`);
 }
 
 export async function listAllFolders(bucket: string): Promise<string[]> {
@@ -254,54 +251,19 @@ export async function doesS3Exist(bucket: string, key: string): Promise<boolean>
   
   if (isR2Bucket) {
     if (!r2Client) {
-      console.error(`[VERIFY] ✗ R2 client not initialized! Cannot verify R2 bucket "${bucket}"`);
-      console.error(`[VERIFY]   Missing R2 credentials: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT`);
-      console.error(`[VERIFY]   This means verification will fail - file may exist but we can't check it`);
       return false;
     }
     // Use R2 client (same as log-views uses for downloading)
     // This ensures consistency between upload (rclone) and download (AWS SDK)
     try {
-      console.log(`[VERIFY] Checking R2 for bucket="${bucket}", key="${key}"`);
       const command = new HeadObjectCommand({
         Bucket: bucket,
         Key: key
       });
       await r2Client.send(command);
-      console.log(`[VERIFY] ✓ File exists in R2: ${bucket}/${key}`);
       return true;
     } catch (error: any) {
       if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404 || error.name === 'NoSuchKey') {
-        console.log(`[VERIFY] ✗ File NOT found in R2: ${bucket}/${key}`);
-        console.log(`[VERIFY]   Error: ${error.name || 'NotFound'}`);
-        
-        // Try to list files in the bucket to see what's actually there
-        if (r2Client) {
-          try {
-            console.log(`[VERIFY] Listing files in bucket "${bucket}" to see what exists...`);
-            const listCommand = new ListObjectsV2Command({
-              Bucket: bucket,
-              MaxKeys: 20
-            });
-            const listResponse = await r2Client.send(listCommand);
-            if (listResponse.Contents && listResponse.Contents.length > 0) {
-              console.log(`[VERIFY] Found ${listResponse.Contents.length} file(s) in bucket "${bucket}":`);
-              listResponse.Contents.forEach(obj => {
-                const isMatch = obj.Key === key;
-                console.log(`[VERIFY]   ${isMatch ? '✓' : ' '} ${obj.Key} (size: ${obj.Size?.toLocaleString()} bytes, modified: ${obj.LastModified})`);
-              });
-              const exactMatch = listResponse.Contents.find(obj => obj.Key === key);
-              if (!exactMatch) {
-                console.log(`[VERIFY] ⚠ Expected key "${key}" not found in listing!`);
-              }
-            } else {
-              console.log(`[VERIFY] ⚠ Bucket "${bucket}" appears to be empty!`);
-            }
-          } catch (listError: any) {
-            console.warn(`[VERIFY] Could not list bucket contents:`, listError.message);
-          }
-        }
-        
         return false;
       }
       throw error;
