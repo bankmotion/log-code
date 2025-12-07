@@ -55,11 +55,19 @@ Test data:
     }
   } catch (error: any) {
     console.error('\n❌ Upload error:', error.message || error);
-    console.error('\n💡 Make sure:');
-    console.error('   1. Rclone is installed: rclone --version');
-    console.error('   2. Rclone is configured: rclone config');
-    console.error('   3. Remote "r2:" exists in rclone config');
-    console.error('   4. R2 credentials are correct');
+    console.error('\n💡 Setup Instructions:');
+    console.error('   1. Install rclone: sudo apt install rclone (or download from rclone.org)');
+    console.error('   2. Configure R2 remote: rclone config');
+    console.error('      - Create new remote named "r2"');
+    console.error('      - Storage type: s3');
+    console.error('      - Provider: Cloudflare');
+    console.error('      - Enter your R2 Access Key ID, Secret Key, Endpoint, and Account ID');
+    console.error('   3. Test manually: rclone ls r2:aznude-clean-logs');
+    console.error('\n📖 See setup-rclone.md for detailed instructions');
+    console.error('\n🔍 Quick check:');
+    console.error('   - Config file location: ~/.config/rclone/rclone.conf');
+    console.error('   - List remotes: rclone listremotes');
+    console.error('   - Test connection: rclone lsd r2:');
   }
 }
 

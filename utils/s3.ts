@@ -224,18 +224,37 @@ export async function uploadFile(localPath: string, bucket: string, key: string)
 }
 
 export async function doesS3Exist(bucket: string, key: string): Promise<boolean> {
+  // Since we're uploading to R2 via rclone, check using rclone too
+  // This matches the Python code behavior
   try {
-    const command = new HeadObjectCommand({
-      Bucket: bucket,
-      Key: key
-    });
-    await s3Client.send(command);
-    return true;
-  } catch (error: any) {
-    if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+    const rclonePath = `r2:${bucket}/${key}`;
+    const command = `rclone ls "${rclonePath}"`;
+    
+    try {
+      execSync(command, { 
+        encoding: 'utf-8',
+        stdio: 'pipe' // Suppress output
+      });
+      return true; // File exists
+    } catch (error: any) {
+      // rclone returns non-zero exit code if file doesn't exist
       return false;
     }
-    throw error;
+  } catch (error: any) {
+    // Fallback to S3 SDK check (for Wasabi downloads)
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key
+      });
+      await s3Client.send(command);
+      return true;
+    } catch (s3Error: any) {
+      if (s3Error.name === 'NotFound' || s3Error.$metadata?.httpStatusCode === 404) {
+        return false;
+      }
+      throw s3Error;
+    }
   }
 }
 
