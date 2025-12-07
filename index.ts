@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { readdirSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync, createWriteStream, createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import type { WriteStream } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import crypto from 'crypto';
 import { config } from './config.js';
 import { sqlQuery } from './utils/database.js';
@@ -782,7 +782,9 @@ async function processBatchSSHChecks(
     if (existsSync(outputFilePathUnique)) {
       // Use rclone to upload to R2 (like Python does)
       // Format: r2:bucket-name/path/to/file.txt
-      const rcloneResult = await rcloneCopy(outputFilePathUnique, `r2:${bucketNameClean}/${dateDirectory}.txt`);
+      // Convert to absolute path for rclone (Python uses absolute paths like /var/www/cloudflarelog/...)
+      const absolutePath = resolve(outputFilePathUnique);
+      const rcloneResult = await rcloneCopy(absolutePath, `r2:${bucketNameClean}/${dateDirectory}.txt`);
       
       if (rcloneResult !== 'success') {
         console.error('Rclone copy failed');

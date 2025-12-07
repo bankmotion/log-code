@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { rcloneCopy } from './utils/s3.js';
 
 // Test script to upload a file to R2 (aznude-clean-logs bucket)
@@ -38,11 +38,13 @@ Test data:
   console.log(`✓ Test file created (${testContent.split('\n').length} lines)\n`);
   
   // Test upload to R2
+  // Use absolute path (like the main code does)
+  const absoluteTestPath = resolve(testFilePath);
   console.log(`📤 Uploading to R2: r2:${bucketName}/${testDate}.txt`);
-  console.log(`   Local file: ${testFilePath}\n`);
+  console.log(`   Local file: ${absoluteTestPath}\n`);
   
   try {
-    const result = await rcloneCopy(testFilePath, `r2:${bucketName}/${testDate}.txt`);
+    const result = await rcloneCopy(absoluteTestPath, `r2:${bucketName}/${testDate}.txt`);
     
     if (result === 'success') {
       console.log('\n✅ Upload successful!');
