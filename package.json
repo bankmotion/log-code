@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc",
     "start": "tsx index.ts",
-    "dev": "tsx index.ts"
+    "dev": "tsx index.ts",
+    "test:upload": "tsx test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.490.0",
