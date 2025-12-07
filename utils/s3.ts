@@ -3,6 +3,9 @@ import { config } from '../config.js';
 import { execSync } from 'child_process';
 import { readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 // Build S3 client configuration
 const s3Config: any = {
@@ -30,6 +33,25 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
 // 2. AWS credentials file (~/.aws/credentials) with the profile from AWS_PROFILE
 // 3. Default credential provider chain
 const s3Client = new S3Client(s3Config);
+
+// Create R2 client (for checking file existence after upload, same as log-views uses)
+const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
+const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+const r2Endpoint = process.env.R2_ENDPOINT;
+const r2Region = process.env.R2_REGION || 'auto';
+
+let r2Client: S3Client | null = null;
+if (r2AccessKeyId && r2SecretAccessKey && r2Endpoint) {
+  r2Client = new S3Client({
+    region: r2Region,
+    endpoint: r2Endpoint,
+    credentials: {
+      accessKeyId: r2AccessKeyId,
+      secretAccessKey: r2SecretAccessKey,
+    },
+    forcePathStyle: true,
+  });
+}
 
 export async function listAllFolders(bucket: string): Promise<string[]> {
   const folders: string[] = [];
@@ -224,24 +246,27 @@ export async function uploadFile(localPath: string, bucket: string, key: string)
 }
 
 export async function doesS3Exist(bucket: string, key: string): Promise<boolean> {
-  // Since we're uploading to R2 via rclone, check using rclone too
-  // This matches the Python code behavior
-  try {
-    const rclonePath = `r2:${bucket}/${key}`;
-    const command = `rclone ls "${rclonePath}"`;
-    
+  // Check if this is an R2 bucket (clean-logs buckets are R2)
+  const isR2Bucket = bucket.includes('clean-logs');
+  
+  if (isR2Bucket && r2Client) {
+    // Use R2 client (same as log-views uses for downloading)
+    // This ensures consistency between upload (rclone) and download (AWS SDK)
     try {
-      execSync(command, { 
-        encoding: 'utf-8',
-        stdio: 'pipe' // Suppress output
+      const command = new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key
       });
-      return true; // File exists
+      await r2Client.send(command);
+      return true;
     } catch (error: any) {
-      // rclone returns non-zero exit code if file doesn't exist
-      return false;
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        return false;
+      }
+      throw error;
     }
-  } catch (error: any) {
-    // Fallback to S3 SDK check (for Wasabi downloads)
+  } else {
+    // Use Wasabi S3 client (for source log downloads)
     try {
       const command = new HeadObjectCommand({
         Bucket: bucket,
@@ -249,11 +274,11 @@ export async function doesS3Exist(bucket: string, key: string): Promise<boolean>
       });
       await s3Client.send(command);
       return true;
-    } catch (s3Error: any) {
-      if (s3Error.name === 'NotFound' || s3Error.$metadata?.httpStatusCode === 404) {
+    } catch (error: any) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         return false;
       }
-      throw s3Error;
+      throw error;
     }
   }
 }
