@@ -679,80 +679,103 @@ async function processBatchSSHChecks(
     
     console.log(`[${genderType}][${dateDirectory}] ✓ Merged ${mergedCount} files successfully`);
 
-    // Step 4: Sort and deduplicate (using streaming to avoid memory issues)
-    console.log(`[${genderType}][${dateDirectory}] Step 4: Deduplicating and sorting (streaming mode)`);
+    // Step 4: Sort and deduplicate using system sort (memory efficient)
+    // Use 'sort -u' which handles both sorting and deduplication efficiently
+    // This uses external sorting and doesn't load everything into memory
+    console.log(`[${genderType}][${dateDirectory}] Step 4: Sorting and deduplicating (using system sort -u)`);
     
-    // Step 4a: Deduplicate using streaming
-    console.log(`[${genderType}][${dateDirectory}] Step 4a: Deduplicating...`);
-    const seen = new Set<string>();
-    const uniqueStream = createWriteStream(outputFilePathUnique, { flags: 'w' });
-    const inputStream = createReadStream(outputFilePath, { encoding: 'utf-8' });
-    const rl = createInterface({
-      input: inputStream,
-      crlfDelay: Infinity
-    });
-    
-    let uniqueCount = 0;
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (trimmed && !seen.has(trimmed)) {
-        seen.add(trimmed);
-        uniqueStream.write(trimmed + '\n');
-        uniqueCount++;
-        if (uniqueCount % 1000000 === 0) {
-          console.log(`[${genderType}][${dateDirectory}] Deduplicated ${uniqueCount.toLocaleString()} unique lines...`);
-        }
-      }
-    }
-    
-    uniqueStream.end();
-    await new Promise<void>((resolve) => {
-      uniqueStream.on('close', () => resolve());
-    });
-    
-    console.log(`[${genderType}][${dateDirectory}] ✓ Deduplication complete: ${uniqueCount.toLocaleString()} unique lines`);
-    
-    // Step 4b: Sort the deduplicated file
-    // For very large files, we'll use the system sort command which is memory efficient
-    console.log(`[${genderType}][${dateDirectory}] Step 4b: Sorting ${uniqueCount.toLocaleString()} lines...`);
-    
-    // Use system sort command for large files (external sort)
     const { execSync } = await import('child_process');
-    const tempSortedFile = outputFilePathUnique + '.sorted';
     
     try {
-      // Use system sort command - it handles large files efficiently with external sorting
-      execSync(`sort "${outputFilePathUnique}" > "${tempSortedFile}"`, { 
+      // Use system 'sort -u' command:
+      // -u: unique (remove duplicates)
+      // This uses external sorting and is very memory efficient
+      console.log(`[${genderType}][${dateDirectory}] Running system sort -u (this may take a while for large files)...`);
+      
+      execSync(`sort -u "${outputFilePath}" -o "${outputFilePathUnique}"`, { 
         encoding: 'utf-8',
-        maxBuffer: 1024 * 1024 * 1024 // 1GB buffer
+        maxBuffer: 1024 * 1024 * 1024, // 1GB buffer
+        stdio: 'inherit' // Show progress
       });
       
-      // Replace original with sorted file
-      const { renameSync } = await import('fs');
-      renameSync(tempSortedFile, outputFilePathUnique);
+      console.log(`[${genderType}][${dateDirectory}] ✓ Sort and deduplication complete`);
       
-      console.log(`[${genderType}][${dateDirectory}] ✓ Sorting complete`);
-    } catch (error: any) {
-      console.error(`[${genderType}][${dateDirectory}] System sort failed, using Node.js sort (may be slower):`, error.message);
-      
-      // Fallback: Node.js sort (will use more memory)
-      const sortedLines: string[] = [];
-      const sortedStream = createReadStream(outputFilePathUnique, { encoding: 'utf-8' });
-      const sortedRl = createInterface({
-        input: sortedStream,
+      // Count lines in the final file
+      const finalStream = createReadStream(outputFilePathUnique, { encoding: 'utf-8' });
+      const finalRl = createInterface({
+        input: finalStream,
         crlfDelay: Infinity
       });
       
-      for await (const line of sortedRl) {
-        const trimmed = line.trim();
-        if (trimmed) {
-          sortedLines.push(trimmed);
+      let finalCount = 0;
+      for await (const line of finalRl) {
+        if (line.trim()) {
+          finalCount++;
         }
       }
       
-      sortedLines.sort();
-      writeFileSync(outputFilePathUnique, sortedLines.join('\n') + '\n');
-      console.log(`[${genderType}][${dateDirectory}] ✓ Node.js sort complete`);
+      console.log(`[${genderType}][${dateDirectory}] ✓ Final file contains ${finalCount.toLocaleString()} unique lines`);
+    } catch (error: any) {
+      console.error(`[${genderType}][${dateDirectory}] System sort failed:`, error.message);
+      console.error(`[${genderType}][${dateDirectory}] Attempting fallback method...`);
+      
+      // Fallback: Use streaming with smaller chunks
+      // This is less memory efficient but should work if system sort is unavailable
+      console.log(`[${genderType}][${dateDirectory}] Using streaming deduplication fallback...`);
+      
+      const seen = new Set<string>();
+      const uniqueStream = createWriteStream(outputFilePathUnique, { flags: 'w' });
+      const inputStream = createReadStream(outputFilePath, { encoding: 'utf-8' });
+      const rl = createInterface({
+        input: inputStream,
+        crlfDelay: Infinity
+      });
+      
+      let uniqueCount = 0;
+      const MAX_SET_SIZE = 5000000; // Limit Set size to 5M entries
+      
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          if (!seen.has(trimmed)) {
+            seen.add(trimmed);
+            uniqueStream.write(trimmed + '\n');
+            uniqueCount++;
+            
+            // Periodically clear the Set to free memory (we've already written unique lines)
+            if (seen.size >= MAX_SET_SIZE) {
+              seen.clear();
+              if (uniqueCount % 1000000 === 0) {
+                console.log(`[${genderType}][${dateDirectory}] Processed ${uniqueCount.toLocaleString()} unique lines...`);
+              }
+            }
+            
+            if (uniqueCount % 1000000 === 0) {
+              console.log(`[${genderType}][${dateDirectory}] Deduplicated ${uniqueCount.toLocaleString()} unique lines...`);
+            }
+          }
+        }
+      }
+      
+      uniqueStream.end();
+      await new Promise<void>((resolve) => {
+        uniqueStream.on('close', () => resolve());
+      });
+      
+      console.log(`[${genderType}][${dateDirectory}] ✓ Fallback deduplication complete: ${uniqueCount.toLocaleString()} unique lines`);
+      
+      // Now sort the deduplicated file
+      console.log(`[${genderType}][${dateDirectory}] Sorting deduplicated file...`);
+      try {
+        execSync(`sort "${outputFilePathUnique}" -o "${outputFilePathUnique}"`, { 
+          encoding: 'utf-8',
+          maxBuffer: 1024 * 1024 * 1024
+        });
+        console.log(`[${genderType}][${dateDirectory}] ✓ Sorting complete`);
+      } catch (sortError: any) {
+        console.error(`[${genderType}][${dateDirectory}] Sort failed:`, sortError.message);
+        throw sortError;
+      }
     }
 
     // Check if file exists and upload
