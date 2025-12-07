@@ -49,8 +49,11 @@ if (r2AccessKeyId && r2SecretAccessKey && r2Endpoint) {
       accessKeyId: r2AccessKeyId,
       secretAccessKey: r2SecretAccessKey,
     },
-    forcePathStyle: true,
+    forcePathStyle: true, // Required for R2 (same as log-views)
   });
+  console.log(`[R2_CLIENT] R2 client initialized with endpoint: ${r2Endpoint}`);
+} else {
+  console.warn(`[R2_CLIENT] R2 client not initialized - missing credentials. Check R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT`);
 }
 
 export async function listAllFolders(bucket: string): Promise<string[]> {
