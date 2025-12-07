@@ -1,4 +1,4 @@
-import { S3Client, ListObjectsV2Command, PutObjectCommand, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, ListObjectsV2Command, PutObjectCommand, HeadObjectCommand, GetObjectCommand, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { config } from '../config.js';
 import { execSync } from 'child_process';
 import { readFileSync, mkdirSync, writeFileSync } from 'fs';
@@ -171,7 +171,38 @@ export async function downloadFolder(bucket: string, folderPath: string, localPa
   }
 }
 
+// Check if bucket exists, create if it doesn't
+async function ensureBucketExists(bucket: string): Promise<void> {
+  try {
+    // Try to head the bucket (check if it exists)
+    const headCommand = new HeadBucketCommand({ Bucket: bucket });
+    await s3Client.send(headCommand);
+    // Bucket exists, nothing to do
+  } catch (error: any) {
+    // If bucket doesn't exist (404), create it
+    if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404 || error.Code === 'NoSuchBucket') {
+      console.log(`Bucket '${bucket}' does not exist. Creating it...`);
+      try {
+        const createCommand = new CreateBucketCommand({
+          Bucket: bucket
+        });
+        await s3Client.send(createCommand);
+        console.log(`✓ Bucket '${bucket}' created successfully`);
+      } catch (createError: any) {
+        console.error(`Failed to create bucket '${bucket}':`, createError.message || createError);
+        throw new Error(`Bucket '${bucket}' does not exist and could not be created. Please create it manually in your S3/Wasabi console.`);
+      }
+    } else {
+      // Some other error, re-throw it
+      throw error;
+    }
+  }
+}
+
 export async function uploadFile(localPath: string, bucket: string, key: string): Promise<boolean> {
+  // Ensure bucket exists before uploading
+  await ensureBucketExists(bucket);
+  
   const fileContent = readFileSync(localPath);
   
   const command = new PutObjectCommand({
@@ -183,7 +214,10 @@ export async function uploadFile(localPath: string, bucket: string, key: string)
   try {
     await s3Client.send(command);
     return true;
-  } catch (error) {
+  } catch (error: any) {
+    if (error.Code === 'NoSuchBucket') {
+      throw new Error(`Bucket '${bucket}' does not exist. Please create it in your S3/Wasabi console or check your bucket name configuration.`);
+    }
     console.error('Upload failed:', error);
     throw error;
   }
