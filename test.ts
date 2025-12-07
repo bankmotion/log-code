@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
-import { rcloneCopy } from './utils/s3.js';
+import { rcloneCopy, doesS3Exist } from './utils/s3.js';
 
 // Test script to upload a file to R2 (aznude-clean-logs bucket)
 async function testUpload() {
@@ -49,8 +49,29 @@ Test data:
     if (result === 'success') {
       console.log('\n✅ Upload successful!');
       console.log(`   File uploaded to: r2:${bucketName}/${testDate}.txt`);
-      console.log(`\n💡 You can verify the upload by running:`);
+      
+      // Verify using AWS SDK (same as log-views uses)
+      console.log(`\n🔍 Verifying file exists using AWS SDK (same method log-views uses)...`);
+      try {
+        const exists = await doesS3Exist(bucketName, `${testDate}.txt`);
+        if (exists) {
+          console.log(`\n✅ Verification successful! File is accessible via AWS SDK.`);
+          console.log(`   log-views should be able to download this file.`);
+        } else {
+          console.error(`\n❌ Verification failed! File is NOT accessible via AWS SDK.`);
+          console.error(`   This means log-views won't be able to download it.`);
+          console.error(`   Possible issues:`);
+          console.error(`   1. File uploaded to wrong location`);
+          console.error(`   2. R2 credentials mismatch between rclone and AWS SDK`);
+          console.error(`   3. Bucket/region configuration mismatch`);
+        }
+      } catch (verifyError: any) {
+        console.error(`\n❌ Verification error:`, verifyError.message);
+      }
+      
+      console.log(`\n💡 You can also verify manually by running:`);
       console.log(`   rclone ls r2:${bucketName}/`);
+      console.log(`   rclone ls r2:${bucketName}/${testDate}.txt`);
     } else {
       console.error('\n❌ Upload failed!');
       console.error('   Check rclone configuration and R2 credentials');
