@@ -792,34 +792,6 @@ async function processBatchSSHChecks(
         process.exit(1);
       }
 
-      // Verify the file was uploaded correctly
-      console.log(`[${genderType}][${dateDirectory}] Verifying upload...`);
-      try {
-        // List the specific file
-        const verifyCommand = `rclone ls "${remotePath}"`;
-        const verifyOutput = execSync(verifyCommand, { encoding: 'utf-8', stdio: 'pipe' });
-        console.log(`[${genderType}][${dateDirectory}] ✓ Upload verified: ${verifyOutput.trim()}`);
-        
-        // Also list all files in the bucket to see what's there
-        try {
-          const listCommand = `rclone ls "r2:${bucketNameClean}/"`;
-          const listOutput = execSync(listCommand, { encoding: 'utf-8', stdio: 'pipe' });
-          const matchingLines = listOutput.split('\n').filter(line => line.includes(`${dateDirectory}.txt`));
-          if (matchingLines.length > 0) {
-            console.log(`[${genderType}][${dateDirectory}] Found in bucket listing: ${matchingLines.join(', ')}`);
-          } else {
-            console.log(`[${genderType}][${dateDirectory}] ⚠ File not found in bucket listing (but rclone ls succeeded)`);
-          }
-        } catch (listError: any) {
-          console.warn(`[${genderType}][${dateDirectory}] Could not list bucket contents:`, listError.message);
-        }
-        
-        console.log(`[${genderType}][${dateDirectory}] File location in R2: ${remotePath}`);
-        console.log(`[${genderType}][${dateDirectory}] Expected by log-views: bucket=${bucketNameClean}, key=${dateDirectory}.txt`);
-        console.log(`[${genderType}][${dateDirectory}] Database will store: s3://${bucketNameClean}/${dateDirectory}.txt`);
-      } catch (verifyError: any) {
-        console.warn(`[${genderType}][${dateDirectory}] ⚠ Could not verify upload (file might still be there):`, verifyError.message);
-      }
 
       console.log(`[${genderType}][${dateDirectory}] Upload successful! Cleaning up local files...`);
       removeDirectory(outputDirectory);
