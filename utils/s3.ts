@@ -252,7 +252,13 @@ export async function doesS3Exist(bucket: string, key: string): Promise<boolean>
   // Check if this is an R2 bucket (clean-logs buckets are R2)
   const isR2Bucket = bucket.includes('clean-logs');
   
-  if (isR2Bucket && r2Client) {
+  if (isR2Bucket) {
+    if (!r2Client) {
+      console.error(`[VERIFY] ✗ R2 client not initialized! Cannot verify R2 bucket "${bucket}"`);
+      console.error(`[VERIFY]   Missing R2 credentials: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT`);
+      console.error(`[VERIFY]   This means verification will fail - file may exist but we can't check it`);
+      return false;
+    }
     // Use R2 client (same as log-views uses for downloading)
     // This ensures consistency between upload (rclone) and download (AWS SDK)
     try {

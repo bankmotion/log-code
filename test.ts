@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
+import { execSync } from 'child_process';
 import { rcloneCopy, doesS3Exist } from './utils/s3.js';
 
 // Test script to upload a file to R2 (aznude-clean-logs bucket)
@@ -50,23 +51,63 @@ Test data:
       console.log('\n✅ Upload successful!');
       console.log(`   File uploaded to: r2:${bucketName}/${testDate}.txt`);
       
+      // First verify with rclone (to see what rclone actually uploaded)
+      console.log(`\n🔍 Step 1: Verifying with rclone (what rclone uploaded)...`);
+      try {
+        const rcloneVerify = `rclone ls "r2:${bucketName}/${testDate}.txt"`;
+        const rcloneOutput = execSync(rcloneVerify, { encoding: 'utf-8', stdio: 'pipe' });
+        console.log(`   ✓ rclone can see the file: ${rcloneOutput.trim()}`);
+      } catch (rcloneError: any) {
+        console.error(`   ✗ rclone cannot see the file! Upload may have failed silently.`);
+        console.error(`   Error: ${rcloneError.message}`);
+      }
+      
+      // List recent files in bucket via rclone
+      console.log(`\n🔍 Step 2: Listing recent files in bucket via rclone...`);
+      try {
+        const rcloneList = `rclone ls "r2:${bucketName}/" | tail -10`;
+        const rcloneListOutput = execSync(rcloneList, { encoding: 'utf-8', stdio: 'pipe', shell: true });
+        console.log(`   Recent files in bucket:`);
+        console.log(rcloneListOutput);
+        const hasFile = rcloneListOutput.includes(`${testDate}.txt`);
+        if (hasFile) {
+          console.log(`   ✓ File ${testDate}.txt found in listing`);
+        } else {
+          console.log(`   ⚠ File ${testDate}.txt NOT found in recent files`);
+        }
+      } catch (listError: any) {
+        console.warn(`   Could not list bucket: ${listError.message}`);
+      }
+      
       // Verify using AWS SDK (same as log-views uses)
-      console.log(`\n🔍 Verifying file exists using AWS SDK (same method log-views uses)...`);
+      console.log(`\n🔍 Step 3: Verifying file exists using AWS SDK (same method log-views uses)...`);
+      console.log(`   Note: This requires R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT in .env`);
       try {
         const exists = await doesS3Exist(bucketName, `${testDate}.txt`);
         if (exists) {
           console.log(`\n✅ Verification successful! File is accessible via AWS SDK.`);
           console.log(`   log-views should be able to download this file.`);
+          console.log(`\n⚠️  IMPORTANT: Make sure log-views uses the SAME R2 credentials:`);
+          console.log(`   - Same R2_ACCESS_KEY_ID`);
+          console.log(`   - Same R2_SECRET_ACCESS_KEY`);
+          console.log(`   - Same R2_ENDPOINT`);
+          console.log(`   If they differ, rclone uploads to one account but log-views reads from another!`);
         } else {
           console.error(`\n❌ Verification failed! File is NOT accessible via AWS SDK.`);
           console.error(`   This means log-views won't be able to download it.`);
-          console.error(`   Possible issues:`);
-          console.error(`   1. File uploaded to wrong location`);
-          console.error(`   2. R2 credentials mismatch between rclone and AWS SDK`);
-          console.error(`   3. Bucket/region configuration mismatch`);
+          console.error(`\n🔍 Possible issues:`);
+          console.error(`   1. R2 credentials not set in log-node/.env (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT)`);
+          console.error(`   2. File uploaded to different R2 account (rclone config vs .env)`);
+          console.error(`   3. File uploaded to wrong location`);
+          console.error(`   4. R2 credentials mismatch between rclone and AWS SDK`);
+          console.error(`\n💡 Check:`);
+          console.error(`   - rclone config show r2  (to see rclone's R2 config)`);
+          console.error(`   - log-node/.env  (should have R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT)`);
+          console.error(`   - log-views/.env  (should have same R2 credentials)`);
         }
       } catch (verifyError: any) {
         console.error(`\n❌ Verification error:`, verifyError.message);
+        console.error(`   This usually means R2 credentials are missing or incorrect.`);
       }
       
       console.log(`\n💡 You can also verify manually by running:`);
