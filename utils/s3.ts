@@ -343,14 +343,16 @@ export async function rcloneCopy(localPath: string, remotePath: string): Promise
   // Always use rclone (like Python does)
   // Note: R2 credentials are configured in rclone config (~/.config/rclone/rclone.conf)
   // No need for AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars for R2 uploads
-  const command = `rclone copy "${localPath}" "${rcloneRemotePath}"`;
+  // Use 'copyto' instead of 'copy' to upload a single file to a specific key
+  // 'copy' creates directories, 'copyto' uploads to exact path
+  const command = `rclone copyto "${localPath}" "${rcloneRemotePath}"`;
   console.log(`[RCLONE] ${command}`);
   
   try {
     execSync(command, { stdio: 'inherit' });
     return 'success';
   } catch (error) {
-    console.error('Rclone copy failed:', error);
+    console.error('Rclone copyto failed:', error);
     console.error('Make sure rclone is configured with R2 credentials:');
     console.error('  Run: rclone config');
     console.error('  Create/edit remote named "r2:" with your Cloudflare R2 credentials');
