@@ -240,25 +240,35 @@ export async function doesS3Exist(bucket: string, key: string): Promise<boolean>
 }
 
 export async function rcloneCopy(localPath: string, remotePath: string): Promise<string> {
-  if (!config.rclone.enabled) {
-    // Fallback to S3 upload if rclone is not enabled
-    const match = remotePath.match(/s3:\/\/([^\/]+)\/(.+)/);
-    if (match) {
-      const [, bucket, key] = match;
-      await uploadFile(localPath, bucket, key);
-      return 'success';
-    }
-    return 'failed';
+  // Check if remotePath is already in rclone format (r2:...) or s3:// format
+  let rcloneRemotePath: string;
+  
+  if (remotePath.startsWith('r2:')) {
+    // Already in rclone format: r2:bucket/path
+    rcloneRemotePath = remotePath;
+  } else if (remotePath.startsWith('s3://')) {
+    // Convert s3:// to rclone format: s3://bucket/path -> r2:bucket/path
+    // (assuming R2 is configured as 'r2:' remote in rclone)
+    rcloneRemotePath = remotePath.replace(/^s3:\/\//, 'r2:');
+  } else {
+    // Assume it's just the path, prepend rclone remote
+    rcloneRemotePath = `${config.rclone.remote}${remotePath}`;
   }
-
-  const command = `rclone copy "${localPath}" "${config.rclone.remote}${remotePath.replace(/^s3:\/\//, '')}"`;
-  console.log(command);
+  
+  // Always use rclone (like Python does)
+  // Note: R2 credentials are configured in rclone config (~/.config/rclone/rclone.conf)
+  // No need for AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars for R2 uploads
+  const command = `rclone copy "${localPath}" "${rcloneRemotePath}"`;
+  console.log(`[RCLONE] ${command}`);
   
   try {
     execSync(command, { stdio: 'inherit' });
     return 'success';
   } catch (error) {
     console.error('Rclone copy failed:', error);
+    console.error('Make sure rclone is configured with R2 credentials:');
+    console.error('  Run: rclone config');
+    console.error('  Create/edit remote named "r2:" with your Cloudflare R2 credentials');
     return 'failed';
   }
 }

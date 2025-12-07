@@ -55,7 +55,8 @@ export const config: Config = {
     port: parseInt(process.env.MYSQL_PORT || '3306', 10)
   },
 
-  // S3/Wasabi configuration
+  // S3/Wasabi configuration (for downloading logs)
+  // Note: For R2 uploads, credentials are handled by rclone config, not env vars
   s3: {
     endpoint: process.env.WASABI_ENDPOINT || 'https://s3.us-east-2.wasabisys.com',
     profile: process.env.AWS_PROFILE || 'wasabi',

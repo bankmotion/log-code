@@ -780,7 +780,9 @@ async function processBatchSSHChecks(
 
     // Check if file exists and upload
     if (existsSync(outputFilePathUnique)) {
-      const rcloneResult = await rcloneCopy(outputFilePathUnique, `s3://${bucketNameClean}/${dateDirectory}.txt`);
+      // Use rclone to upload to R2 (like Python does)
+      // Format: r2:bucket-name/path/to/file.txt
+      const rcloneResult = await rcloneCopy(outputFilePathUnique, `r2:${bucketNameClean}/${dateDirectory}.txt`);
       
       if (rcloneResult !== 'success') {
         console.error('Rclone copy failed');
