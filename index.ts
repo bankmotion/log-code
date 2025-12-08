@@ -497,25 +497,10 @@ async function processBatchSSHChecks(
       .sort();
     console.log(`[${genderType}][${dateDirectory}] Found ${files.length} log files to process`);
 
-    // Process files in smaller batches with progress tracking and temp files
-    const FILE_BATCH_SIZE = 100; // Reduced from 100 to prevent hangs
+    // Process files in smaller batches with temp files
+    const FILE_BATCH_SIZE = 100;
     let totalProcessed = 0;
     let totalErrors = 0;
-    
-    // Create progress tracking file
-    const progressFile = join(outputDirectory, '.progress.json');
-    let progress: { processed: string[]; failed: string[] } = { processed: [], failed: [] };
-    
-    // Load existing progress if available
-    if (existsSync(progressFile)) {
-      try {
-        progress = JSON.parse(readFileSync(progressFile, 'utf-8'));
-        console.log(`[${genderType}][${dateDirectory}] Resuming from previous run: ${progress.processed.length} files already processed`);
-      } catch (e) {
-        // Invalid progress file, start fresh
-        progress = { processed: [], failed: [] };
-      }
-    }
 
     for (let i = 0; i < files.length; i += FILE_BATCH_SIZE) {
       const batch = files.slice(i, i + FILE_BATCH_SIZE);
@@ -528,18 +513,13 @@ async function processBatchSSHChecks(
       
       // Process batch in parallel with timeout protection
       const batchPromises = batch.map(async (fileName) => {
-        // Skip if already processed
-        if (progress.processed.includes(fileName)) {
-          return { fileName, success: true, entryCount: 0 };
-        }
-        
         try {
           const filePath = join(directory, fileName);
           
-          // Add timeout wrapper for file processing (5 minutes max per file)
+          // Add timeout wrapper for file processing (1 hour max per file)
           const processPromise = parseLargeJsonFile(filePath);
           const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error(`Timeout: File processing exceeded 5 minutes`)), 5 * 60 * 1000)
+            setTimeout(() => reject(new Error(`Timeout: File processing exceeded 1 hour`)), 60 * 60 * 1000)
           );
           
           const entryFetch = await Promise.race([processPromise, timeoutPromise]);
@@ -559,18 +539,9 @@ async function processBatchSSHChecks(
           // Remove duplicates
           removeDuplicatesFile(tempOutFile);
           
-          // Mark as processed
-          progress.processed.push(fileName);
-          progress.failed = progress.failed.filter(f => f !== fileName);
-          
           return { fileName, success: true, entryCount: entryFetch.length };
         } catch (error: any) {
           console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, error.message || error);
-          
-          // Mark as failed
-          if (!progress.failed.includes(fileName)) {
-            progress.failed.push(fileName);
-          }
           
           return { fileName, success: false, error: error.message || String(error), entryCount: 0 };
         }
@@ -578,9 +549,6 @@ async function processBatchSSHChecks(
 
       // Wait for all files in batch to complete in parallel
       const batchResults = await Promise.all(batchPromises);
-      
-      // Save progress after batch completes
-      writeFileSync(progressFile, JSON.stringify(progress, null, 2));
       
       // Count successes and errors
       const batchSuccesses = batchResults.filter(r => r.success).length;
@@ -605,9 +573,6 @@ async function processBatchSSHChecks(
         console.log(`[${genderType}][${dateDirectory}]   Elapsed: ${elapsedTotal}s, ETA: ${etaMinutes}m`);
       }
       
-      // Save progress checkpoint
-      writeFileSync(progressFile, JSON.stringify(progress, null, 2));
-      
       // Log detailed record counts per file (only for successful files)
       if (batchEntryCount > 0) {
         const successfulFiles = batchResults.filter(r => r.success && r.entryCount > 0);
@@ -627,11 +592,6 @@ async function processBatchSSHChecks(
           console.error(`    - ${r.fileName}: ${r.error}`);
         });
       }
-    }
-
-    // Clean up progress file after successful completion
-    if (existsSync(progressFile)) {
-      removeFile(progressFile);
     }
     
     // Calculate total records across all batches
