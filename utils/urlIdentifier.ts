@@ -102,7 +102,7 @@ export async function preloadTableData(database: string): Promise<void> {
   
   for (const { name: table, idColumn } of tables) {
     try {
-      const query = `SELECT * FROM \`${table}\``;
+      const query = `SELECT * FROM \`${database}\`.\`${table}\``;
       const results = await sqlQuery(query, database, 'select') as RowDataPacket[];
       
       preloadedTableCache[database][table] = {};
@@ -505,7 +505,7 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
                .replace(/_hd\.html|_hi\.html|_lo\.html|-hd\.html|-hi\.html|-lo\.html/g, '');
 
     const escapedFile = escapeHardcodedValues(file);
-    const query = `SELECT * FROM \`${table}\` WHERE \`thumb_id\` LIKE '%${escapedFile}%' LIMIT 1;`;
+    const query = `SELECT * FROM \`${databaseItem}\`.\`${table}\` WHERE \`thumb_id\` LIKE '%${escapedFile}%' LIMIT 1;`;
 
     try {
       const results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
@@ -623,7 +623,7 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       // Not found in pre-loaded cache - check if it's a duplicate
       try {
         const duplicateResults = await sqlQuery(
-          `SELECT origin FROM \`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
+          `SELECT origin FROM \`${databaseItem}\`.\`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
           databaseItem,
           'select'
         ) as RowDataPacket[];
@@ -655,7 +655,7 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
     }
     
     // Fallback: If pre-loaded cache not available, query on-demand (shouldn't happen if preloadTableData was called)
-    let query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${elementId}' LIMIT 1;`;
+    let query = `SELECT * FROM \`${databaseItem}\`.\`${table}\` WHERE \`${column}\` ='${elementId}' LIMIT 1;`;
     let results: RowDataPacket[] = [];
     
     try {
@@ -665,13 +665,13 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
         // Check duplicates
         try {
           const duplicateResults = await sqlQuery(
-            `SELECT origin FROM \`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
+            `SELECT origin FROM \`${databaseItem}\`.\`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
             databaseItem,
             'select'
           ) as RowDataPacket[];
           if (duplicateResults && duplicateResults.length > 0) {
             const originalElementId = String(duplicateResults[0].origin);
-            query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${originalElementId}' LIMIT 1;`;
+            query = `SELECT * FROM \`${databaseItem}\`.\`${table}\` WHERE \`${column}\` ='${originalElementId}' LIMIT 1;`;
             results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
           } else {
             // Not found and not a duplicate - log to missing IDs file
