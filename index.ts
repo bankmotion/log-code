@@ -145,7 +145,7 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
   let lineCount = 0;
   for await (const line of fileIterator) {
     lineCount++;
-    if (lineCount % 10000 === 0) {
+    if (lineCount % 50000 === 0) {
       console.log(`Processed ${lineCount} lines from ${filePath}`);
     }
 
@@ -335,7 +335,7 @@ async function processBatchSSHChecks(
       }
       
       if (foundCount > 0) {
-        console.log(`Batch result: ${foundCount}/${files.length} files exist on server`);
+        // console.log(`Batch result: ${foundCount}/${files.length} files exist on server`);
       }
       
       break; // Success
