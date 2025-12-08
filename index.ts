@@ -18,7 +18,7 @@ import {
   removeDirectory,
   removeFile
 } from './utils/fileUtils.js';
-import { whatIsGender, loadHtmlMap, identifyItem } from './utils/urlIdentifier.js';
+import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData } from './utils/urlIdentifier.js';
 
 interface LogEntry {
   db?: string;
@@ -439,6 +439,11 @@ async function processBatchSSHChecks(
     
     // Setup logging for this date folder
     setupDateLogging(dateDirectory);
+    
+    // Clear and pre-load database tables at the start of each date processing
+    // This loads all celebs, movies, stories into memory for fast lookups
+    clearDbQueryCache();
+    await preloadTableData(databaseGlobal);
     
     console.log(`\n${'='.repeat(60)}`);
     console.log(`[${genderType}] Processing folder ${processedCount}/${filteredFolders.length}: ${dateDirectory}`);

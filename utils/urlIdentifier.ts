@@ -77,6 +77,55 @@ export function whatIsGender(genderInput: string): 'f' | 'm' | 'fans' | null {
 
 let md5Associations: Record<string, HtmlMapAssociation> = {};
 
+// Pre-loaded table data cache (loaded once per date processing)
+// Structure: { [database]: { [table]: { [id]: RowDataPacket } } }
+// This is much more efficient than querying on-demand - loads all data at once
+let preloadedTableCache: Record<string, Record<string, Record<string, RowDataPacket>>> = {};
+
+// Pre-load all data from movies, celebs, and stories tables for a database
+// This is much more efficient than querying on-demand - single bulk query per table
+export async function preloadTableData(database: string): Promise<void> {
+  if (preloadedTableCache[database]) {
+    // Already loaded
+    return;
+  }
+  
+  preloadedTableCache[database] = {};
+  
+  const tables = [
+    { name: 'celebs', idColumn: 'celebid' },
+    { name: 'movies', idColumn: 'movieid' },
+    { name: 'stories', idColumn: 'storyid' }
+  ];
+  
+  console.log(`[CACHE] Pre-loading table data from ${database}...`);
+  
+  for (const { name: table, idColumn } of tables) {
+    try {
+      const query = `SELECT * FROM \`${table}\``;
+      const results = await sqlQuery(query, database, 'select') as RowDataPacket[];
+      
+      preloadedTableCache[database][table] = {};
+      for (const row of results) {
+        const id = String(row[idColumn]);
+        preloadedTableCache[database][table][id] = row;
+      }
+      
+      console.log(`[CACHE] ✓ Pre-loaded ${results.length.toLocaleString()} records from ${database}.${table}`);
+    } catch (error: any) {
+      console.warn(`[CACHE] ⚠ Failed to pre-load ${database}.${table}:`, error.message);
+      preloadedTableCache[database][table] = {};
+    }
+  }
+  
+  console.log(`[CACHE] ✓ Pre-loading complete for ${database}`);
+}
+
+// Clear the database query cache (call this at the start of each date processing)
+export function clearDbQueryCache(): void {
+  preloadedTableCache = {};
+}
+
 export async function loadHtmlMap(): Promise<Record<string, HtmlMapAssociation>> {
   const query = "SELECT id, dbandtable, identifier FROM `html_map`;";
   const results = await sqlQuery(query, config.databases.BRAZZERS, 'select') as RowDataPacket[];
@@ -546,12 +595,62 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       return 'unidentified';
     }
 
+    // Check pre-loaded cache first (much faster - no database query during processing!)
+    if (preloadedTableCache[databaseItem] && preloadedTableCache[databaseItem][table]) {
+      const row = preloadedTableCache[databaseItem][table][elementId];
+      if (row) {
+        // Found in pre-loaded cache - use it directly (no database query!)
+        const elementIdValue = row[column];
+        const activeStatus = row[statusLocation];
+        
+        const addition = await addToHtmlMap(md5Item, fullUrl, site, databaseItem, table, elementIdValue, activeStatus, dateToday);
+        if (addition === 'success') {
+          return md5Associations[md5Item];
+        }
+        return 'unidentified';
+      }
+      
+      // Not found in pre-loaded cache - check if it's a duplicate
+      try {
+        const duplicateResults = await sqlQuery(
+          `SELECT origin FROM \`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
+          databaseItem,
+          'select'
+        ) as RowDataPacket[];
+        if (duplicateResults && duplicateResults.length > 0) {
+          const originalElementId = String(duplicateResults[0].origin);
+          const originalRow = preloadedTableCache[databaseItem][table][originalElementId];
+          if (originalRow) {
+            // Found original in cache
+            const elementIdValue = originalRow[column];
+            const activeStatus = originalRow[statusLocation];
+            
+            const addition = await addToHtmlMap(md5Item, fullUrl, site, databaseItem, table, elementIdValue, activeStatus, dateToday);
+            if (addition === 'success') {
+              return md5Associations[md5Item];
+            }
+            return 'unidentified';
+          }
+        }
+      } catch (e) {
+        // Ignore duplicate check errors
+      }
+      
+      // Not found in pre-loaded cache and not a duplicate
+      console.error('Full URL:', fullUrl);
+      console.error(`Not found in ${databaseItem}.${table} for ID: ${elementId}`);
+      return 'unidentified';
+    }
+    
+    // Fallback: If pre-loaded cache not available, query on-demand (shouldn't happen if preloadTableData was called)
     let query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${elementId}' LIMIT 1;`;
+    let results: RowDataPacket[] = [];
     
     try {
-      let results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
+      results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
+      
       if (!results || results.length === 0) {
-        // Check if this is a duplicate that was merged
+        // Check duplicates
         try {
           const duplicateResults = await sqlQuery(
             `SELECT origin FROM \`duplicate-handling\` WHERE \`destination\` LIKE '${elementId}'`,
@@ -559,8 +658,8 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
             'select'
           ) as RowDataPacket[];
           if (duplicateResults && duplicateResults.length > 0) {
-            elementId = String(duplicateResults[0].origin);
-            query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${elementId}' LIMIT 1;`;
+            const originalElementId = String(duplicateResults[0].origin);
+            query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${originalElementId}' LIMIT 1;`;
             results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
           } else {
             console.error('Full URL:', fullUrl);
@@ -569,8 +668,6 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
           }
         } catch (e) {
           console.error('Error checking duplicates:', e);
-          console.error('Full URL:', fullUrl);
-          console.error('Query:', query);
           return 'unidentified';
         }
       }
