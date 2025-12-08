@@ -127,7 +127,7 @@ export function clearDbQueryCache(): void {
 }
 
 export async function loadHtmlMap(): Promise<Record<string, HtmlMapAssociation>> {
-  const query = "SELECT id, dbandtable, identifier FROM `html_map`;";
+  const query = `SELECT id, dbandtable, identifier FROM \`${config.databases.BRAZZERS}\`.\`html_map\`;`;
   const results = await sqlQuery(query, config.databases.BRAZZERS, 'select') as RowDataPacket[];
   
   md5Associations = {};
@@ -163,7 +163,7 @@ async function addToHtmlMap(
   }
 
   const escapedUrl = escapeHardcodedValues(fullUrl);
-  const insertQuery = `INSERT INTO \`html_map\` (\`id\`, \`url\`, \`site\`, \`dbandtable\`, \`identifier\`, \`status\`, \`date_added\`) VALUES ('${md5Item}', '${escapedUrl}', '${site}', '${databaseItem}.${table}', '${elementId}', '${activeStatus}', '${dateToday}')`;
+  const insertQuery = `INSERT INTO \`${config.databases.BRAZZERS}\`.\`html_map\` (\`id\`, \`url\`, \`site\`, \`dbandtable\`, \`identifier\`, \`status\`, \`date_added\`) VALUES ('${md5Item}', '${escapedUrl}', '${site}', '${databaseItem}.${table}', '${elementId}', '${activeStatus}', '${dateToday}')`;
   
   await sqlQuery(insertQuery, config.databases.BRAZZERS, 'update');
   return 'success';
