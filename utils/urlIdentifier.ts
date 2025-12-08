@@ -367,6 +367,16 @@ function getSiteConfig(host: string): SiteConfig | null {
   return null;
 }
 
+// Callback type for logging missing IDs
+export type MissingIdLogger = (url: string, table: string, id: string, database: string) => void;
+
+// Global missing ID logger (set by index.ts)
+let missingIdLogger: MissingIdLogger | null = null;
+
+export function setMissingIdLogger(logger: MissingIdLogger | null): void {
+  missingIdLogger = logger;
+}
+
 export async function identifyItem(host: string, uri: string): Promise<HtmlMapAssociation | 'invalid' | 'unidentified'> {
   const dateToday = new Date().toISOString().split('T')[0];
   
@@ -637,8 +647,10 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       }
       
       // Not found in pre-loaded cache and not a duplicate
-      console.error('Full URL:', fullUrl);
-      console.error(`Not found in ${databaseItem}.${table} for ID: ${elementId}`);
+      // Log to missing IDs file for manual review
+      if (missingIdLogger) {
+        missingIdLogger(fullUrl, table, elementId, databaseItem);
+      }
       return 'unidentified';
     }
     
@@ -662,17 +674,26 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
             query = `SELECT * FROM \`${table}\` WHERE \`${column}\` ='${originalElementId}' LIMIT 1;`;
             results = await sqlQuery(query, databaseItem, 'select') as RowDataPacket[];
           } else {
-            console.error('Full URL:', fullUrl);
-            console.error('Query:', query);
+            // Not found and not a duplicate - log to missing IDs file
+            if (missingIdLogger) {
+              missingIdLogger(fullUrl, table, elementId, databaseItem);
+            }
             return 'unidentified';
           }
         } catch (e) {
-          console.error('Error checking duplicates:', e);
+          // Error checking duplicates - log to missing IDs file
+          if (missingIdLogger) {
+            missingIdLogger(fullUrl, table, elementId, databaseItem);
+          }
           return 'unidentified';
         }
       }
 
       if (!results || results.length === 0) {
+        // Log to missing IDs file
+        if (missingIdLogger) {
+          missingIdLogger(fullUrl, table, elementId, databaseItem);
+        }
         return 'unidentified';
       }
 
@@ -687,9 +708,10 @@ export async function identifyItem(host: string, uri: string): Promise<HtmlMapAs
       await addToHtmlMap(md5Item, fullUrl, site, databaseItem, table, elementId, String(activeStatus), dateToday);
       return md5Associations[md5Item];
     } catch (error) {
-      console.error('Error querying database:', error);
-      console.error('Full URL:', fullUrl);
-      console.error('Query:', query);
+      // Log to missing IDs file if logger is available
+      if (missingIdLogger) {
+        missingIdLogger(fullUrl, table, elementId, databaseItem);
+      }
       return 'unidentified';
     }
   } else {

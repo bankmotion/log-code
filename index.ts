@@ -18,7 +18,7 @@ import {
   removeDirectory,
   removeFile
 } from './utils/fileUtils.js';
-import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData } from './utils/urlIdentifier.js';
+import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger } from './utils/urlIdentifier.js';
 
 interface LogEntry {
   db?: string;
@@ -107,6 +107,17 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
 
   // Use local logs folder for notfound file
   const notFoundFile = `./logs/notfound-${genderGlobalLog}.txt`;
+  // Separate file for missing IDs (IDs extracted from HTML but not found in database)
+  const missingIdFile = `./logs/missing-ids-${genderGlobalLog}.txt`;
+  
+  // Ensure logs directory exists
+  ensureDirectoryExists('./logs');
+  
+  // Set up missing ID logger - logs URLs where ID was extracted but not found in database
+  setMissingIdLogger((url: string, table: string, id: string, database: string) => {
+    const logLine = `${url} | Table: ${table} | ID: ${id} | Database: ${database}\n`;
+    appendFileSync(missingIdFile, logLine);
+  });
 
   async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
   const dateHi = filePath.split('/').pop() || '';
@@ -444,6 +455,9 @@ async function processBatchSSHChecks(
     // This loads all celebs, movies, stories into memory for fast lookups
     clearDbQueryCache();
     await preloadTableData(databaseGlobal);
+    
+    // Clear missing ID file at the start of each date (optional - comment out if you want cumulative log)
+    // writeFileSync(missingIdFile, ''); // Uncomment to clear file per date
     
     console.log(`\n${'='.repeat(60)}`);
     console.log(`[${genderType}] Processing folder ${processedCount}/${filteredFolders.length}: ${dateDirectory}`);
@@ -849,6 +863,9 @@ async function processBatchSSHChecks(
   console.log = originalLog;
   console.warn = originalWarn;
   console.error = originalError;
+  
+  // Clear missing ID logger
+  setMissingIdLogger(null);
 }
 
 // Main execution
