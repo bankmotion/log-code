@@ -21,7 +21,7 @@ import {
 import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger, flushAllHtmlMapBatches } from './utils/urlIdentifier.js';
 
 // Constants
-const FILE_TIMEOUT = 7 * 60 * 1000; // 7 minutes per file (in milliseconds)
+const FILE_TIMEOUT = 10 * 60 * 1000; // 10 minutes per file (in milliseconds)
 
 interface LogEntry {
   db?: string;
