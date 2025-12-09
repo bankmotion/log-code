@@ -270,8 +270,13 @@ async function processBatchSSHChecks(
     return; // Silently skip - SSH is not available
   }
   
+  // Calculate SSH timeout (60 seconds max - increased for large batches)
+  // Use a longer timeout for large batches to prevent premature timeouts
+  const sshTimeout = Math.min(60000, 1000 + (files.length * 1000)); // 1s base + 1s per file, max 60s
+  
   // Log total file count before starting batch SSH process
-  console.log(`[SSH] Processing ${files.length} files`);
+  const sshBatchStartTime = Date.now();
+  console.log(`[SSH] Processing ${files.length} files (timeout: ${sshTimeout/1000}s)`);
   
   // Build a single SSH command that checks all files
   // Use a simpler approach: escape paths properly and construct the command
@@ -299,16 +304,22 @@ async function processBatchSSHChecks(
   
   let attemptsFileCheck = 0;
   let unexpectedError = 0;
-  
-  // Calculate SSH timeout (60 seconds max - increased for large batches)
-  // Use a longer timeout for large batches to prevent premature timeouts
-  const sshTimeout = Math.min(60000, 1000 + (files.length * 1000)); // 1s base + 1s per file, max 60s
 
   while (true) {
     try {
       const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
       
+      if (attemptsFileCheck > 0) {
+        console.log(`[SSH] Retry attempt ${attemptsFileCheck + 1}/10 for ${files.length} files`);
+      }
+      
+      const sshCommandStartTime = Date.now();
+      console.log(`[SSH] Executing command (timeout: ${sshTimeout/1000}s)...`);
+      
       const outputCommand = bashCommand(normalizedCommand, sshTimeout);
+      
+      const sshCommandDuration = ((Date.now() - sshCommandStartTime) / 1000).toFixed(2);
+      console.log(`[SSH] Command completed in ${sshCommandDuration}s`);
       
       // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
       const results = new Map<string, boolean>();
@@ -339,9 +350,8 @@ async function processBatchSSHChecks(
         }
       }
       
-      if (foundCount > 0) {
-        // console.log(`Batch result: ${foundCount}/${files.length} files exist on server`);
-      }
+      const sshBatchDuration = ((Date.now() - sshBatchStartTime) / 1000).toFixed(2);
+      console.log(`[SSH] Batch completed in ${sshBatchDuration}s - Found: ${foundCount}/${files.length} files exist`);
       
       break; // Success
       
@@ -524,8 +534,10 @@ async function processBatchSSHChecks(
       
       // Process batch in parallel with timeout protection
       const batchPromises = batch.map(async (fileName) => {
+        const fileStartTime = Date.now();
         try {
           const filePath = join(directory, fileName);
+          console.log(`[FILE] Starting: ${fileName}`);
           
           // Add timeout wrapper for file processing (1 hour max per file)
           const processPromise = parseLargeJsonFile(filePath);
@@ -534,6 +546,9 @@ async function processBatchSSHChecks(
           );
           
           const entryFetch = await Promise.race([processPromise, timeoutPromise]);
+          
+          const fileDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+          console.log(`[FILE] Completed: ${fileName} in ${fileDuration}s (${entryFetch.length} entries)`);
           
           // Python: temp_out_file = output_directory + file_path.split('/')[-1]
           // This gets just the filename from the full path
@@ -552,9 +567,12 @@ async function processBatchSSHChecks(
           
           return { fileName, success: true, entryCount: entryFetch.length };
         } catch (error: any) {
-          console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, error.message || error);
+          const fileDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+          const errorMsg = error.message || String(error);
+          console.error(`[FILE] Failed: ${fileName} after ${fileDuration}s - ${errorMsg}`);
+          console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, errorMsg);
           
-          return { fileName, success: false, error: error.message || String(error), entryCount: 0 };
+          return { fileName, success: false, error: errorMsg, entryCount: 0 };
         }
       });
 
@@ -562,6 +580,8 @@ async function processBatchSSHChecks(
       // Add a timeout for the entire batch (30 minutes max for 100 files)
       const batchTimeout = 30 * 60 * 1000; // 30 minutes
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
+      
+      console.log(`[BATCH] Waiting for ${batch.length} files to complete (timeout: 30 minutes)...`);
       
       try {
         const batchTimeoutPromise = new Promise<never>((_, reject) => 
@@ -572,9 +592,12 @@ async function processBatchSSHChecks(
           Promise.all(batchPromises),
           batchTimeoutPromise
         ]) as Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
+        
+        console.log(`[BATCH] All files in batch ${batchNumber} completed`);
       } catch (error: any) {
         if (error.message && error.message.includes('Batch processing exceeded')) {
-          console.error(`[${genderType}][${dateDirectory}] Batch ${batchNumber} timed out after 30 minutes - marking remaining files as failed`);
+          const elapsed = ((Date.now() - batchStartTime) / 1000 / 60).toFixed(1);
+          console.error(`[BATCH] Batch ${batchNumber} timed out after ${elapsed} minutes - marking remaining files as failed`);
           // Mark all incomplete files as failed
           const completedFiles = new Set<string>();
           // We can't know which files completed, so we'll mark the batch as having errors
