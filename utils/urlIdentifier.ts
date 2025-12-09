@@ -170,19 +170,34 @@ async function flushHtmlMapBatch(): Promise<void> {
     return;
   }
 
+  const flushStartTime = Date.now();
   try {
     // Build multi-value INSERT statement with ON DUPLICATE KEY UPDATE to handle duplicates
+    const buildStartTime = Date.now();
     const values = batch.map(item => {
       const escapedUrl = escapeHardcodedValues(item.fullUrl);
       return `('${item.md5Item}', '${escapedUrl}', '${item.site}', '${item.databaseItem}.${item.table}', '${item.elementId}', '${item.activeStatus}', '${item.dateToday}')`;
     }).join(', ');
+    const buildDuration = ((Date.now() - buildStartTime) / 1000).toFixed(3);
+    
+    if (batch.length > 50) {
+      console.log(`[DB] Building INSERT query for ${batch.length} records (took ${buildDuration}s)...`);
+    }
 
     const insertQuery = `INSERT INTO \`${config.databases.BRAZZERS}\`.\`html_map\` (\`id\`, \`url\`, \`site\`, \`dbandtable\`, \`identifier\`, \`status\`, \`date_added\`) VALUES ${values} ON DUPLICATE KEY UPDATE \`url\`=VALUES(\`url\`), \`dbandtable\`=VALUES(\`dbandtable\`), \`identifier\`=VALUES(\`identifier\`), \`status\`=VALUES(\`status\`), \`date_added\`=VALUES(\`date_added\`)`;
     
+    const queryStartTime = Date.now();
     await sqlQuery(insertQuery, config.databases.BRAZZERS, 'update');
+    const queryDuration = ((Date.now() - queryStartTime) / 1000).toFixed(2);
+    const totalDuration = ((Date.now() - flushStartTime) / 1000).toFixed(2);
+    
+    if (batch.length > 50 || parseFloat(queryDuration) > 5) {
+      console.log(`[DB] Inserted ${batch.length} records in ${queryDuration}s (total: ${totalDuration}s)`);
+    }
   } catch (error) {
+    const errorDuration = ((Date.now() - flushStartTime) / 1000).toFixed(2);
     // If batch insert fails, log error but don't throw (to avoid stopping processing)
-    console.error(`[DB] Batch insert failed for ${batch.length} records:`, error);
+    console.error(`[DB] Batch insert failed for ${batch.length} records after ${errorDuration}s:`, error);
     // Re-queue items for potential retry (optional - you might want to handle this differently)
     htmlMapInsertQueue.push(...batch);
   }
