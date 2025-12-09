@@ -22,7 +22,8 @@ import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTabl
 
 // Constants
 const FILE_TIMEOUT = 7 * 60 * 1000; // 7 minutes per file (in milliseconds)
-const MAX_RETRIES = 3; // Maximum number of retry attempts for file processing
+const MAX_RETRIES = 2; // Maximum number of retry attempts for file processing
+const FILE_BATCH_SIZE = 50; // Number of files to process in each batch
 
 interface LogEntry {
   db?: string;
@@ -522,7 +523,6 @@ async function processBatchSSHChecks(
     console.log(`[${genderType}][${dateDirectory}] Found ${files.length} log files to process`);
 
     // Process files in smaller batches with temp files
-    const FILE_BATCH_SIZE = 100;
     let totalProcessed = 0;
     let totalErrors = 0;
 
