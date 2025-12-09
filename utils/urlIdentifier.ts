@@ -5,6 +5,21 @@ import { bashCommand } from './fileUtils.js';
 import type { RowDataPacket } from 'mysql2/promise';
 import { load } from 'cheerio';
 
+// Batch processing for html_map inserts
+interface HtmlMapInsert {
+  md5Item: string;
+  fullUrl: string;
+  site: string;
+  databaseItem: string;
+  table: string;
+  elementId: string | number;
+  activeStatus: string;
+  dateToday: string;
+}
+
+let htmlMapInsertQueue: HtmlMapInsert[] = [];
+const HTML_MAP_BATCH_SIZE = 100; // Flush every 100 inserts
+
 // Static pages that should be ignored
 const STATIC_PAGES: string[] = [
   '/tags/tags.html',
@@ -142,6 +157,37 @@ export async function loadHtmlMap(): Promise<Record<string, HtmlMapAssociation>>
   return md5Associations;
 }
 
+// Flush batched html_map inserts to database
+async function flushHtmlMapBatch(): Promise<void> {
+  if (htmlMapInsertQueue.length === 0) {
+    return;
+  }
+
+  const batch = htmlMapInsertQueue;
+  htmlMapInsertQueue = []; // Clear queue before processing
+
+  if (batch.length === 0) {
+    return;
+  }
+
+  try {
+    // Build multi-value INSERT statement with ON DUPLICATE KEY UPDATE to handle duplicates
+    const values = batch.map(item => {
+      const escapedUrl = escapeHardcodedValues(item.fullUrl);
+      return `('${item.md5Item}', '${escapedUrl}', '${item.site}', '${item.databaseItem}.${item.table}', '${item.elementId}', '${item.activeStatus}', '${item.dateToday}')`;
+    }).join(', ');
+
+    const insertQuery = `INSERT INTO \`${config.databases.BRAZZERS}\`.\`html_map\` (\`id\`, \`url\`, \`site\`, \`dbandtable\`, \`identifier\`, \`status\`, \`date_added\`) VALUES ${values} ON DUPLICATE KEY UPDATE \`url\`=VALUES(\`url\`), \`dbandtable\`=VALUES(\`dbandtable\`), \`identifier\`=VALUES(\`identifier\`), \`status\`=VALUES(\`status\`), \`date_added\`=VALUES(\`date_added\`)`;
+    
+    await sqlQuery(insertQuery, config.databases.BRAZZERS, 'update');
+  } catch (error) {
+    // If batch insert fails, log error but don't throw (to avoid stopping processing)
+    console.error(`[DB] Batch insert failed for ${batch.length} records:`, error);
+    // Re-queue items for potential retry (optional - you might want to handle this differently)
+    htmlMapInsertQueue.push(...batch);
+  }
+}
+
 async function addToHtmlMap(
   md5Item: string,
   fullUrl: string,
@@ -162,11 +208,29 @@ async function addToHtmlMap(
     };
   }
 
-  const escapedUrl = escapeHardcodedValues(fullUrl);
-  const insertQuery = `INSERT INTO \`${config.databases.BRAZZERS}\`.\`html_map\` (\`id\`, \`url\`, \`site\`, \`dbandtable\`, \`identifier\`, \`status\`, \`date_added\`) VALUES ('${md5Item}', '${escapedUrl}', '${site}', '${databaseItem}.${table}', '${elementId}', '${activeStatus}', '${dateToday}')`;
-  
-  await sqlQuery(insertQuery, config.databases.BRAZZERS, 'update');
+  // Add to batch queue instead of inserting immediately
+  htmlMapInsertQueue.push({
+    md5Item,
+    fullUrl,
+    site,
+    databaseItem,
+    table,
+    elementId,
+    activeStatus,
+    dateToday
+  });
+
+  // Flush batch if it reaches the batch size
+  if (htmlMapInsertQueue.length >= HTML_MAP_BATCH_SIZE) {
+    await flushHtmlMapBatch();
+  }
+
   return 'success';
+}
+
+// Export function to flush remaining batch (call at end of processing)
+export async function flushAllHtmlMapBatches(): Promise<void> {
+  await flushHtmlMapBatch();
 }
 
 // This function extracts the element ID from HTML files

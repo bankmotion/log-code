@@ -18,7 +18,7 @@ import {
   removeDirectory,
   removeFile
 } from './utils/fileUtils.js';
-import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger } from './utils/urlIdentifier.js';
+import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger, flushAllHtmlMapBatches } from './utils/urlIdentifier.js';
 
 interface LogEntry {
   db?: string;
@@ -626,6 +626,9 @@ async function processBatchSSHChecks(
       const etaSeconds = remainingFiles * avgTimePerFile / 1000;
       const etaMinutes = Math.floor(etaSeconds / 60);
       
+      // Flush html_map inserts after each batch to avoid memory buildup
+      await flushAllHtmlMapBatches();
+      
       // Log batch summary with record counts
       console.log(`[${genderType}][${dateDirectory}] Batch ${batchNumber}/${totalBatches} completed in ${batchDuration}s`);
       console.log(`[${genderType}][${dateDirectory}]   Success: ${batchSuccesses}, Errors: ${batchErrors}, Entries: ${batchEntryCount.toLocaleString()}`);
@@ -843,6 +846,10 @@ async function processBatchSSHChecks(
       process.exit(1);
     }
 
+    // Flush any remaining html_map inserts before updating logs table
+    console.log(`[${genderType}][${dateDirectory}] Flushing remaining html_map inserts...`);
+    await flushAllHtmlMapBatches();
+
     // Step 5: Update database
     console.log(`[${genderType}][${dateDirectory}] Step 5: Updating MySQL database`);
     const cmdUpdate = `INSERT INTO \`logs\` (\`day\`, \`status\`, \`r2_path\`) VALUES ('${dateDirectory}', 'downloaded', 's3://${bucketNameClean}/${dateDirectory}.txt')`;
@@ -887,6 +894,9 @@ async function processBatchSSHChecks(
   
   // Clear missing ID logger
   setMissingIdLogger(null);
+  
+  // Flush any remaining html_map inserts
+  await flushAllHtmlMapBatches();
 }
 
 // Main execution
