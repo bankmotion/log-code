@@ -21,7 +21,8 @@ import {
 import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger, flushAllHtmlMapBatches } from './utils/urlIdentifier.js';
 
 // Constants
-const FILE_TIMEOUT = 10 * 60 * 1000; // 10 minutes per file (in milliseconds)
+const FILE_TIMEOUT = 7 * 60 * 1000; // 7 minutes per file (in milliseconds)
+const MAX_RETRIES = 3; // Maximum number of retry attempts for file processing
 
 interface LogEntry {
   db?: string;
@@ -598,38 +599,42 @@ async function processBatchSSHChecks(
           }
         };
         
-        // Try processing the file, with one retry on timeout
-        try {
-          return await processFile(1);
-        } catch (error: any) {
-          const errorMsg = error.message || String(error);
-          
-          // Only retry if it was a timeout error
-          if (errorMsg.includes('Timeout')) {
-            try {
-              console.log(`[FILE] Retrying ${fileName} after timeout...`);
-              return await processFile(2);
-            } catch (retryError: any) {
-              const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
-              const retryErrorMsg = retryError.message || String(retryError);
-              console.error(`[FILE] Failed after retry: ${fileName} (total: ${totalDuration}s) - ${retryErrorMsg}`);
-              console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${retryErrorMsg}`);
-              
-              return { fileName, success: false, error: retryErrorMsg, entryCount: 0 };
-            }
-          } else {
-            // Non-timeout error - don't retry
-            const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
-            console.error(`[FILE] Failed: ${fileName} after ${totalDuration}s - ${errorMsg}`);
-            console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${errorMsg}`);
+        // Try processing the file, with up to MAX_RETRIES retries on timeout
+        let lastError: any;
+        for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+          try {
+            return await processFile(attempt);
+          } catch (error: any) {
+            lastError = error;
+            const errorMsg = error.message || String(error);
             
-            return { fileName, success: false, error: errorMsg, entryCount: 0 };
+            // Only retry if it was a timeout error and we haven't exceeded max retries
+            if (errorMsg.includes('Timeout') && attempt <= MAX_RETRIES) {
+              console.log(`[FILE] Retry attempt ${attempt}/${MAX_RETRIES} for ${fileName} after timeout...`);
+              continue; // Try again
+            } else {
+              // Non-timeout error or max retries exceeded - don't retry
+              const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+              if (attempt > MAX_RETRIES) {
+                console.error(`[FILE] Failed after ${MAX_RETRIES} retries: ${fileName} (total: ${totalDuration}s) - ${errorMsg}`);
+              } else {
+                console.error(`[FILE] Failed: ${fileName} after ${totalDuration}s - ${errorMsg}`);
+              }
+              console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${errorMsg}`);
+              
+              return { fileName, success: false, error: errorMsg, entryCount: 0 };
+            }
           }
         }
+        
+        // This should never be reached, but TypeScript needs it
+        const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+        const finalErrorMsg = lastError?.message || String(lastError || 'Unknown error');
+        return { fileName, success: false, error: finalErrorMsg, entryCount: 0 };
       });
 
       // Wait for all files in batch to complete - each file has its own timeout
-      // No batch timeout needed since each file will timeout individually (10 min + retry = max 20 min)
+      // No batch timeout needed since each file will timeout individually (7 min + 3 retries = max 28 min)
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
       
       console.log(`[BATCH] Waiting for ${batch.length} files to complete (each file: ${FILE_TIMEOUT/1000/60} min timeout with retry)...`);
@@ -677,7 +682,7 @@ async function processBatchSSHChecks(
       
       try {
         // Wait for all files to complete - each has its own timeout, so Promise.all will complete
-        // when all files have either succeeded or timed out (max 20 minutes per file with retry)
+        // when all files have either succeeded or timed out (max 28 minutes per file with 3 retries)
         await Promise.all(trackedPromises);
         
         clearInterval(progressInterval);
