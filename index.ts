@@ -531,61 +531,107 @@ async function processBatchSSHChecks(
       
       const batchStartTime = Date.now();
       
-      // Process batch in parallel with timeout protection
+      // Process batch in parallel with timeout protection and retry logic
       const batchPromises = batch.map(async (fileName) => {
         const fileStartTime = Date.now();
-        const fileTimeout = 30 * 60 * 1000; // 30 minutes per file
+        const fileTimeout = 10 * 60 * 1000; // 10 minutes per file
+        const filePath = join(directory, fileName);
+        const tempOutFile = join(outputDirectory, fileName);
         
-        try {
-          const filePath = join(directory, fileName);
-          console.log(`[FILE] Starting: ${fileName} (timeout: ${fileTimeout/1000/60} minutes)`);
-          
-          // Add timeout wrapper for file processing
-          const processPromise = parseLargeJsonFile(filePath);
-          const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => {
-              const elapsed = ((Date.now() - fileStartTime) / 1000 / 60).toFixed(1);
-              reject(new Error(`Timeout: File processing exceeded ${fileTimeout/1000/60} minutes (${elapsed} minutes elapsed)`));
-            }, fileTimeout)
-          );
-          
-          const entryFetch = await Promise.race([processPromise, timeoutPromise]);
-          
-          const fileDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
-          console.log(`[FILE] Completed: ${fileName} in ${fileDuration}s (${entryFetch.length} entries)`);
-          
-          // Python: temp_out_file = output_directory + file_path.split('/')[-1]
-          // This gets just the filename from the full path
-          const tempOutFile = join(outputDirectory, fileName);
+        // Helper function to process a single file
+        const processFile = async (attempt: number): Promise<{ fileName: string; success: boolean; error?: string; entryCount: number }> => {
+          const attemptStartTime = Date.now();
+          try {
+            if (attempt > 1) {
+              console.log(`[FILE] Retry attempt ${attempt} for: ${fileName}`);
+            } else {
+              console.log(`[FILE] Starting: ${fileName} (timeout: ${fileTimeout/1000/60} minutes)`);
+            }
+            
+            // Add timeout wrapper for file processing
+            const processPromise = parseLargeJsonFile(filePath);
+            const timeoutPromise = new Promise<never>((_, reject) => 
+              setTimeout(() => {
+                const elapsed = ((Date.now() - attemptStartTime) / 1000 / 60).toFixed(1);
+                reject(new Error(`Timeout: File processing exceeded ${fileTimeout/1000/60} minutes (${elapsed} minutes elapsed)`));
+              }, fileTimeout)
+            );
+            
+            const entryFetch = await Promise.race([processPromise, timeoutPromise]);
+            
+            const attemptDuration = ((Date.now() - attemptStartTime) / 1000).toFixed(1);
+            const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+            
+            if (attempt > 1) {
+              console.log(`[FILE] Retry succeeded: ${fileName} in ${attemptDuration}s (total: ${totalDuration}s, ${entryFetch.length} entries)`);
+            } else {
+              console.log(`[FILE] Completed: ${fileName} in ${attemptDuration}s (${entryFetch.length} entries)`);
+            }
+            
+            // Python: temp_out_file = output_directory + file_path.split('/')[-1]
+            // This gets just the filename from the full path
+            const outputLines: string[] = [];
+            for (const entry of entryFetch) {
+              // Python prints the entry before writing, but we skip it for cleaner logs
+              const jsonString = JSON.stringify(entry);
+              outputLines.push(jsonString);
+            }
+            writeFileSync(tempOutFile, outputLines.join('\n') + '\n');
 
-          const outputLines: string[] = [];
-          for (const entry of entryFetch) {
-            // Python prints the entry before writing, but we skip it for cleaner logs
-            const jsonString = JSON.stringify(entry);
-            outputLines.push(jsonString);
+            // Remove duplicates
+            removeDuplicatesFile(tempOutFile);
+            
+            return { fileName, success: true, entryCount: entryFetch.length };
+          } catch (error: any) {
+            const attemptDuration = ((Date.now() - attemptStartTime) / 1000).toFixed(1);
+            const errorMsg = error.message || String(error);
+            
+            if (errorMsg.includes('Timeout')) {
+              console.error(`[FILE] Timeout on attempt ${attempt}: ${fileName} after ${attemptDuration}s`);
+            } else {
+              console.error(`[FILE] Failed on attempt ${attempt}: ${fileName} after ${attemptDuration}s - ${errorMsg}`);
+            }
+            
+            throw error; // Re-throw to allow retry logic
           }
-          writeFileSync(tempOutFile, outputLines.join('\n') + '\n');
-
-          // Remove duplicates
-          removeDuplicatesFile(tempOutFile);
-          
-          return { fileName, success: true, entryCount: entryFetch.length };
+        };
+        
+        // Try processing the file, with one retry on timeout
+        try {
+          return await processFile(1);
         } catch (error: any) {
-          const fileDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
           const errorMsg = error.message || String(error);
-          console.error(`[FILE] Failed: ${fileName} after ${fileDuration}s - ${errorMsg}`);
-          console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}:`, errorMsg);
           
-          return { fileName, success: false, error: errorMsg, entryCount: 0 };
+          // Only retry if it was a timeout error
+          if (errorMsg.includes('Timeout')) {
+            try {
+              console.log(`[FILE] Retrying ${fileName} after timeout...`);
+              return await processFile(2);
+            } catch (retryError: any) {
+              const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+              const retryErrorMsg = retryError.message || String(retryError);
+              console.error(`[FILE] Failed after retry: ${fileName} (total: ${totalDuration}s) - ${retryErrorMsg}`);
+              console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${retryErrorMsg}`);
+              
+              return { fileName, success: false, error: retryErrorMsg, entryCount: 0 };
+            }
+          } else {
+            // Non-timeout error - don't retry
+            const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
+            console.error(`[FILE] Failed: ${fileName} after ${totalDuration}s - ${errorMsg}`);
+            console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${errorMsg}`);
+            
+            return { fileName, success: false, error: errorMsg, entryCount: 0 };
+          }
         }
       });
 
       // Wait for all files in batch to complete in parallel with overall timeout
-      // Use a shorter timeout (30 minutes) - don't wait for stuck files
-      const batchTimeout = 30 * 60 * 1000; // 30 minutes max for batch
+      // Use a shorter timeout (20 minutes) - don't wait for stuck files
+      const batchTimeout = 20 * 60 * 1000; // 20 minutes max for batch
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
       
-      console.log(`[BATCH] Waiting for ${batch.length} files to complete (timeout: 30 minutes, will proceed with completed files)...`);
+      console.log(`[BATCH] Waiting for ${batch.length} files to complete (timeout: 20 minutes, will proceed with completed files)...`);
       
       // Track progress with periodic updates and identify stuck files
       let completedCount = 0;
@@ -597,12 +643,12 @@ async function processBatchSSHChecks(
         const pendingFiles = batch.filter(f => !completionTracker.has(f));
         const stuckFiles = pendingFiles.filter(f => {
           const startTime = fileStartTimes.get(f) || batchStartTime;
-          return (Date.now() - startTime) > 20 * 60 * 1000; // Files running > 20 minutes
+          return (Date.now() - startTime) > 10 * 60 * 1000; // Files running > 10 minutes
         });
         
         console.log(`[BATCH] Progress: ${completedCount}/${batch.length} files completed, ${elapsed} minutes elapsed`);
         if (stuckFiles.length > 0) {
-          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>20 min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
+          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>10 min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
         }
       }, 60000); // Log every minute
       
@@ -629,8 +675,8 @@ async function processBatchSSHChecks(
       );
       
       try {
-        // Use a shorter timeout (30 minutes) and don't wait for all files
-        const batchTimeout = 30 * 60 * 1000; // 30 minutes max for batch
+        // Use a shorter timeout (20 minutes) and don't wait for all files
+        const batchTimeout = 20 * 60 * 1000; // 20 minutes max for batch
         const batchTimeoutPromise = new Promise<void>((resolve) => 
           setTimeout(() => {
             console.log(`[BATCH] Batch timeout reached - proceeding with completed files`);
