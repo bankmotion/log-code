@@ -534,14 +534,19 @@ async function processBatchSSHChecks(
       // Process batch in parallel with timeout protection
       const batchPromises = batch.map(async (fileName) => {
         const fileStartTime = Date.now();
+        const fileTimeout = 15 * 60 * 1000; // 15 minutes per file (reduced from 2 hours)
+        
         try {
           const filePath = join(directory, fileName);
-          console.log(`[FILE] Starting: ${fileName}`);
+          console.log(`[FILE] Starting: ${fileName} (timeout: ${fileTimeout/1000/60} minutes)`);
           
-          // Add timeout wrapper for file processing (2 hours max per file)
+          // Add timeout wrapper for file processing
           const processPromise = parseLargeJsonFile(filePath);
           const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error(`Timeout: File processing exceeded 2 hours`)), 2 * 60 * 60 * 1000)
+            setTimeout(() => {
+              const elapsed = ((Date.now() - fileStartTime) / 1000 / 60).toFixed(1);
+              reject(new Error(`Timeout: File processing exceeded ${fileTimeout/1000/60} minutes (${elapsed} minutes elapsed)`));
+            }, fileTimeout)
           );
           
           const entryFetch = await Promise.race([processPromise, timeoutPromise]);
@@ -576,17 +581,29 @@ async function processBatchSSHChecks(
       });
 
       // Wait for all files in batch to complete in parallel with overall timeout
-      // Add a timeout for the entire batch (2 hours max for 100 files)
-      const batchTimeout = 2 * 60 * 60 * 1000; // 2 hours
+      // Use a shorter timeout (30 minutes) - don't wait for stuck files
+      const batchTimeout = 30 * 60 * 1000; // 30 minutes max for batch
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
       
-      console.log(`[BATCH] Waiting for ${batch.length} files to complete (timeout: 2 hours)...`);
+      console.log(`[BATCH] Waiting for ${batch.length} files to complete (timeout: 30 minutes, will proceed with completed files)...`);
       
-      // Track progress with periodic updates
+      // Track progress with periodic updates and identify stuck files
       let completedCount = 0;
+      const fileStartTimes = new Map<string, number>();
+      batch.forEach(fileName => fileStartTimes.set(fileName, Date.now()));
+      
       const progressInterval = setInterval(() => {
         const elapsed = ((Date.now() - batchStartTime) / 1000 / 60).toFixed(1);
+        const pendingFiles = batch.filter(f => !completionTracker.has(f));
+        const stuckFiles = pendingFiles.filter(f => {
+          const startTime = fileStartTimes.get(f) || batchStartTime;
+          return (Date.now() - startTime) > 10 * 60 * 1000; // Files running > 10 minutes
+        });
+        
         console.log(`[BATCH] Progress: ${completedCount}/${batch.length} files completed, ${elapsed} minutes elapsed`);
+        if (stuckFiles.length > 0) {
+          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>10 min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
+        }
       }, 60000); // Log every minute
       
       // Track completion for each file
@@ -612,10 +629,16 @@ async function processBatchSSHChecks(
       );
       
       try {
-        const batchTimeoutPromise = new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error(`Batch processing exceeded 2 hours`)), batchTimeout)
+        // Use a shorter timeout (30 minutes) and don't wait for all files
+        const batchTimeout = 30 * 60 * 1000; // 30 minutes max for batch
+        const batchTimeoutPromise = new Promise<void>((resolve) => 
+          setTimeout(() => {
+            console.log(`[BATCH] Batch timeout reached - proceeding with completed files`);
+            resolve();
+          }, batchTimeout)
         );
         
+        // Race between all files completing and timeout
         await Promise.race([
           Promise.all(trackedPromises),
           batchTimeoutPromise
@@ -623,17 +646,18 @@ async function processBatchSSHChecks(
         
         clearInterval(progressInterval);
         
-        // Build results from completion tracker
+        // Build results from completion tracker (use whatever we have)
         batchResults = batch.map(fileName => 
           completionTracker.get(fileName) || {
             fileName,
             success: false,
-            error: 'File result not found',
+            error: 'File did not complete within batch timeout',
             entryCount: 0
           }
         );
         
-        console.log(`[BATCH] All files in batch ${batchNumber} completed: ${completedCount}/${batch.length}`);
+        const finalCompleted = batchResults.filter(r => r.success).length;
+        console.log(`[BATCH] Batch ${batchNumber} finished: ${finalCompleted}/${batch.length} files succeeded`);
       } catch (error: any) {
         clearInterval(progressInterval);
         
@@ -641,6 +665,17 @@ async function processBatchSSHChecks(
           const elapsed = ((Date.now() - batchStartTime) / 1000 / 60).toFixed(1);
           console.error(`[BATCH] Batch ${batchNumber} timed out after ${elapsed} minutes`);
           console.error(`[BATCH] Completed: ${completedCount}/${batch.length} files before timeout`);
+          
+          // Identify which files are still pending
+          const pendingFiles = batch.filter(f => !completionTracker.has(f));
+          if (pendingFiles.length > 0) {
+            console.error(`[BATCH] ⚠️  ${pendingFiles.length} files did not complete:`);
+            pendingFiles.forEach(fileName => {
+              const startTime = fileStartTimes.get(fileName) || batchStartTime;
+              const fileElapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+              console.error(`[BATCH]   - ${fileName} (running for ${fileElapsed} minutes)`);
+            });
+          }
           
           // Use whatever results we have from the tracker
           batchResults = batch.map(fileName => 
