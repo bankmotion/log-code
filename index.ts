@@ -534,7 +534,7 @@ async function processBatchSSHChecks(
       // Process batch in parallel with timeout protection
       const batchPromises = batch.map(async (fileName) => {
         const fileStartTime = Date.now();
-        const fileTimeout = 15 * 60 * 1000; // 15 minutes per file (reduced from 2 hours)
+        const fileTimeout = 30 * 60 * 1000; // 30 minutes per file
         
         try {
           const filePath = join(directory, fileName);
@@ -597,12 +597,12 @@ async function processBatchSSHChecks(
         const pendingFiles = batch.filter(f => !completionTracker.has(f));
         const stuckFiles = pendingFiles.filter(f => {
           const startTime = fileStartTimes.get(f) || batchStartTime;
-          return (Date.now() - startTime) > 10 * 60 * 1000; // Files running > 10 minutes
+          return (Date.now() - startTime) > 20 * 60 * 1000; // Files running > 20 minutes
         });
         
         console.log(`[BATCH] Progress: ${completedCount}/${batch.length} files completed, ${elapsed} minutes elapsed`);
         if (stuckFiles.length > 0) {
-          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>10 min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
+          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>20 min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
         }
       }, 60000); // Log every minute
       
