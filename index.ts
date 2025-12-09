@@ -270,6 +270,9 @@ async function processBatchSSHChecks(
     return; // Silently skip - SSH is not available
   }
   
+  // Log total file count before starting batch SSH process
+  console.log(`[SSH] Processing ${files.length} files`);
+  
   // Build a single SSH command that checks all files
   // Use a simpler approach: escape paths properly and construct the command
   // Structure: ssh ... "sh -c 'for file in ...; do ...; done'"
@@ -305,18 +308,7 @@ async function processBatchSSHChecks(
     try {
       const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
       
-      // Log SSH check start for debugging (only for large batches or first attempt)
-      if (files.length > 20 || attemptsFileCheck === 0) {
-        console.log(`[SSH] Checking ${files.length} files (timeout: ${sshTimeout/1000}s, attempt: ${attemptsFileCheck + 1})`);
-      }
-      
-      const sshStartTime = Date.now();
       const outputCommand = bashCommand(normalizedCommand, sshTimeout);
-      const sshDuration = ((Date.now() - sshStartTime) / 1000).toFixed(1);
-      
-      if (files.length > 20 || parseFloat(sshDuration) > 5) {
-        console.log(`[SSH] Completed in ${sshDuration}s`);
-      }
       
       // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
       const results = new Map<string, boolean>();
