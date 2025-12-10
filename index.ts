@@ -546,9 +546,9 @@ async function processBatchSSHChecks(
           const attemptStartTime = Date.now();
           try {
             if (attempt > 1) {
-              console.log(`[FILE] Retry attempt ${attempt} for: ${fileName}`);
+              // console.log(`[FILE] Retry attempt ${attempt} for: ${fileName}`);
             } else {
-              console.log(`[FILE] Starting: ${fileName} (timeout: ${FILE_TIMEOUT/1000/60} minutes)`);
+              // console.log(`[FILE] Starting: ${fileName} (timeout: ${FILE_TIMEOUT/1000/60} minutes)`);
             }
             
             // Add timeout wrapper for file processing
@@ -1012,7 +1012,7 @@ console.log('✓ HTML map loaded successfully\n');
 
 // Process all genders sequentially: f, then m, then fans
 // Currently disabled: 'm' and 'fans' - only processing 'f'
-const genders: Array<'f' | 'm' | 'fans'> = ['f'];
+const genders: Array<'f' | 'm' | 'fans'> = ['m'];
 const genderResults: Array<{ gender: string; success: boolean; error?: string }> = [];
 
 for (const gender of genders) {
