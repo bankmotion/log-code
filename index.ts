@@ -566,9 +566,9 @@ async function processBatchSSHChecks(
             const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
             
             if (attempt > 1) {
-              console.log(`[FILE] Retry succeeded: ${fileName} in ${attemptDuration}s (total: ${totalDuration}s, ${entryFetch.length} entries)`);
+              // console.log(`[FILE] Retry succeeded: ${fileName} in ${attemptDuration}s (total: ${totalDuration}s, ${entryFetch.length} entries)`);
             } else {
-              console.log(`[FILE] Completed: ${fileName} in ${attemptDuration}s (${entryFetch.length} entries)`);
+              // console.log(`[FILE] Completed: ${fileName} in ${attemptDuration}s (${entryFetch.length} entries)`);
             }
             
             // Python: temp_out_file = output_directory + file_path.split('/')[-1]
