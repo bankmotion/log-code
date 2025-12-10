@@ -1011,18 +1011,37 @@ await loadHtmlMap();
 console.log('✓ HTML map loaded successfully\n');
 
 // Process all genders sequentially: f, then m, then fans
-// Currently disabled: 'm' and 'fans' - only processing 'f'
-const genders: Array<'f' | 'm' | 'fans'> = ['m'];
+// Each gender will complete fully before moving to the next one
+const genders: Array<'f' | 'm' | 'fans'> = ['f', 'm', 'fans'];
 const genderResults: Array<{ gender: string; success: boolean; error?: string }> = [];
 
-for (const gender of genders) {
+for (let i = 0; i < genders.length; i++) {
+  const gender = genders[i];
+  const genderIndex = i + 1;
+  const totalGenders = genders.length;
+  
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🚀 Starting gender ${genderIndex}/${totalGenders}: ${gender}`);
+  console.log(`${'='.repeat(60)}\n`);
+  
   try {
     await processGender(gender);
     genderResults.push({ gender, success: true });
+    console.log(`\n✅ Gender ${gender} (${genderIndex}/${totalGenders}) completed successfully\n`);
+    
+    // If not the last gender, show that we're moving to the next one
+    if (i < genders.length - 1) {
+      const nextGender = genders[i + 1];
+      console.log(`\n⏭️  Moving to next gender: ${nextGender}\n`);
+    }
   } catch (error: any) {
-    console.error(`\n❌ Error processing gender ${gender}:`, error.message || error);
+    console.error(`\n❌ Error processing gender ${gender} (${genderIndex}/${totalGenders}):`, error.message || error);
     genderResults.push({ gender, success: false, error: error.message || String(error) });
     // Continue with next gender even if one fails
+    if (i < genders.length - 1) {
+      const nextGender = genders[i + 1];
+      console.log(`\n⏭️  Continuing to next gender despite error: ${nextGender}\n`);
+    }
   }
 }
 
