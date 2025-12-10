@@ -7,10 +7,10 @@ import crypto from 'crypto';
 import { config } from './config.js';
 import { sqlQuery } from './utils/database.js';
 import { listAllFolders, downloadFolder, rcloneCopy, doesS3Exist } from './utils/s3.js';
-import { 
-  bashCommand, 
-  shellQuote, 
-  removeDuplicatesFile, 
+import {
+  bashCommand,
+  shellQuote,
+  removeDuplicatesFile,
   extractDateFromFilename,
   readGzippedFile,
   readTextFile,
@@ -35,16 +35,16 @@ interface LogEntry {
 // Process a single gender
 async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
   const startTime = Date.now();
-  
+
   // Store original console methods
   const originalLog = console.log.bind(console);
   const originalWarn = console.warn.bind(console);
   const originalError = console.error.bind(console);
-  
+
   // Will be set up per date folder
   let currentLogStream: WriteStream | null = null;
   let currentLogFilePath: string | null = null;
-  
+
   // Function to setup logging for a specific date
   function setupDateLogging(dateDirectory: string) {
     // Close previous log stream if exists
@@ -52,35 +52,35 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
       currentLogStream.end();
       currentLogStream = null;
     }
-    
+
     // Setup logging for this date - save to logs/daily/{gender}/{date}/
     const dateLogDir = join('logs', 'daily', genderType, dateDirectory);
     ensureDirectoryExists(dateLogDir);
-    
+
     currentLogFilePath = join(dateLogDir, 'processing.log');
     currentLogStream = createWriteStream(currentLogFilePath, { flags: 'a' }) as WriteStream;
-    
+
     function writeToDateLog(level: string, ...args: any[]) {
       if (!currentLogStream) return;
-      
+
       const timestamp = new Date().toISOString();
-      const message = args.map(arg => 
+      const message = args.map(arg =>
         typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
       ).join(' ');
       const logLine = `[${timestamp}] [${level}] ${message}\n`;
       currentLogStream.write(logLine);
-      
+
       // Also output to console
       if (level === 'LOG') originalLog(...args);
       else if (level === 'WARN') originalWarn(...args);
       else if (level === 'ERROR') originalError(...args);
     }
-    
+
     console.log = (...args: any[]) => writeToDateLog('LOG', ...args);
     console.warn = (...args: any[]) => writeToDateLog('WARN', ...args);
     console.error = (...args: any[]) => writeToDateLog('ERROR', ...args);
   }
-  
+
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Processing gender: ${genderType}`);
   console.log(`${'='.repeat(60)}\n`);
@@ -114,10 +114,10 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
   const notFoundFile = `./logs/notfound-${genderGlobalLog}.txt`;
   // Separate file for missing IDs (IDs extracted from HTML but not found in database)
   const missingIdFile = `./logs/missing-ids-${genderGlobalLog}.txt`;
-  
+
   // Ensure logs directory exists
   ensureDirectoryExists('./logs');
-  
+
   // Set up missing ID logger - logs URLs where ID was extracted but not found in database
   setMissingIdLogger((url: string, table: string, id: string, database: string) => {
     const logLine = `${url} | Table: ${table} | ID: ${id} | Database: ${database}\n`;
@@ -125,284 +125,284 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
   });
 
   async function parseLargeJsonFile(filePath: string): Promise<LogEntry[]> {
-  const dateHi = filePath.split('/').pop() || '';
-  const dateGet = extractDateFromFilename(dateHi);
-  const entries: LogEntry[] = [];
+    const dateHi = filePath.split('/').pop() || '';
+    const dateGet = extractDateFromFilename(dateHi);
+    const entries: LogEntry[] = [];
 
-  if (!dateGet) {
-    console.error('Could not extract date from filename:', dateHi);
+    if (!dateGet) {
+      console.error('Could not extract date from filename:', dateHi);
+      return entries;
+    }
+
+    // Batch SSH file checks for performance
+    interface UnidentifiedFile {
+      host: string;
+      path: string;
+      serverPath: string;
+    }
+    const unidentifiedFiles: UnidentifiedFile[] = [];
+    const BATCH_SIZE = 30; // Check 30 files per SSH command (reduced to prevent timeouts)
+
+    // Determine if file is gzipped
+    const isGzipped = filePath.endsWith('.gz');
+    const fileIterator = isGzipped ? readGzippedFile(filePath) : readTextFile(filePath);
+
+    let lineCount = 0;
+    for await (const line of fileIterator) {
+      lineCount++;
+
+      try {
+        const data = JSON.parse(line);
+        let clientRequestHost = data.ClientRequestHost;
+        const clientRequestPath = data.ClientRequestPath;
+        let clientIP = data.ClientIP;
+
+        if (!clientIP) {
+          continue;
+        }
+
+        // Hash IP address
+        clientIP = crypto.createHash('md5').update(String(clientIP)).digest('hex');
+
+        // Normalize host
+        if (clientRequestHost === 'aznude.com' || clientRequestHost === 'azmen.com' || clientRequestHost === 'azfans.com') {
+          clientRequestHost = 'www.' + clientRequestHost;
+        }
+
+        // console.log(clientRequestHost);
+
+        // Determine directory and gsutil based on host
+        let dir: string, gsutil: string, gsutilDomain: string;
+
+        if (['cdn2.aznude.com', 'cdn1.aznude.com', 'www.aznude.com', 'user-uploads.aznude.com', 'aznude.com'].includes(clientRequestHost) ||
+          clientRequestHost.includes('aznude.com')) {
+          dir = config.directories.MAIN_DIR_AZNUDE;
+          gsutil = config.gsutil.GC_WOMEN_HTML;
+          gsutilDomain = gsutil.replace('gs://', '');
+        } else if (['men.aznude.com', 'cdn-men.aznude.com', 'azmen.com', 'www.azmen.com'].includes(clientRequestHost) ||
+          clientRequestHost.includes('azmen.com')) {
+          dir = config.directories.MAIN_DIR_AZNUDEMEN;
+          gsutil = config.gsutil.GC_MEN_HTML;
+          gsutilDomain = gsutil.replace('gs://', '');
+        } else if (['cdn2.azfans.com', 'azfans.com', 'www.azfans.com'].includes(clientRequestHost) ||
+          clientRequestHost.includes('azfans.com')) {
+          dir = config.directories.MAIN_DIR_AZFANS;
+          gsutil = config.gsutil.GC_FANS_HTML;
+          gsutilDomain = gsutil.replace('gs://', '');
+        } else {
+          // Default fallback
+          dir = config.directories.MAIN_DIR_AZNUDE;
+          gsutil = config.gsutil.GC_WOMEN_HTML;
+          gsutilDomain = gsutil.replace('gs://', '');
+        }
+
+        if (clientRequestHost && clientRequestPath) {
+          const resultIdentify = await identifyItem(clientRequestHost, clientRequestPath);
+
+          if (resultIdentify === 'unidentified') {
+            // Match Python logic: full_thing.replace(gsutil_domain, dir)
+            // However, this replace won't work if gsutil_domain isn't in full_thing
+            // The Python code has a bug - gsutil_domain (e.g., "aznude-html") is not in full_thing (e.g., "www.aznude.com/view/...")
+            // So we fix it: convert URL to server path by removing host and prepending directory
+            const fullThing = clientRequestHost + clientRequestPath;
+            let fullThingServer: string;
+
+            // Try Python's replace first (in case it works in some edge cases)
+            fullThingServer = fullThing.replace(gsutilDomain, dir);
+
+            // If replace didn't change anything (gsutil_domain not found), manually convert
+            // This fixes the Python bug where replace doesn't work
+            if (fullThingServer === fullThing) {
+              // Convert URL to server path: remove host, prepend directory
+              // Example: "www.aznude.com/view/celeb/e/elisabrandani.html" -> "/var/www/html/aznbaby/view/celeb/e/elisabrandani.html"
+              if (clientRequestPath.startsWith('/')) {
+                fullThingServer = dir + clientRequestPath;
+              } else {
+                fullThingServer = dir + '/' + clientRequestPath;
+              }
+            }
+            // Add to batch instead of checking immediately
+            unidentifiedFiles.push({
+              host: clientRequestHost,
+              path: clientRequestPath,
+              serverPath: fullThingServer
+            });
+
+            // Process batch when it reaches BATCH_SIZE
+            if (unidentifiedFiles.length >= BATCH_SIZE) {
+              await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
+              unidentifiedFiles.length = 0; // Clear the batch
+            }
+          } else if (resultIdentify !== 'invalid') {
+            // Create ordered result with IP and date at the end
+            const orderedResult: LogEntry = {
+              ...resultIdentify,
+              ip: String(clientIP),
+              date: String(dateGet)
+            };
+            entries.push(orderedResult);
+          }
+        }
+      } catch (error) {
+        console.error('Error parsing line:', error);
+        continue;
+      }
+    }
+
+    console.log(`Processed ${lineCount} lines from ${filePath}`);
+
+    // Process remaining batch items
+    if (unidentifiedFiles.length > 0) {
+      await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
+    }
+
     return entries;
   }
 
-  // Batch SSH file checks for performance
-  interface UnidentifiedFile {
-    host: string;
-    path: string;
-    serverPath: string;
-  }
-  const unidentifiedFiles: UnidentifiedFile[] = [];
-  const BATCH_SIZE = 30; // Check 30 files per SSH command (reduced to prevent timeouts)
+  // Batch process SSH file existence checks
+  // Track if SSH has been tested and failed
+  let sshAuthFailed = false;
 
-  // Determine if file is gzipped
-  const isGzipped = filePath.endsWith('.gz');
-  const fileIterator = isGzipped ? readGzippedFile(filePath) : readTextFile(filePath);
+  async function processBatchSSHChecks(
+    files: Array<{ host: string; path: string; serverPath: string }>,
+    notFoundFile: string
+  ): Promise<void> {
+    if (files.length === 0) return;
 
-  let lineCount = 0;
-  for await (const line of fileIterator) {
-    lineCount++;
-
-    try {
-      const data = JSON.parse(line);
-      let clientRequestHost = data.ClientRequestHost;
-      const clientRequestPath = data.ClientRequestPath;
-      let clientIP = data.ClientIP;
-
-      if (!clientIP) {
-        continue;
-      }
-
-      // Hash IP address
-      clientIP = crypto.createHash('md5').update(String(clientIP)).digest('hex');
-
-      // Normalize host
-      if (clientRequestHost === 'aznude.com' || clientRequestHost === 'azmen.com' || clientRequestHost === 'azfans.com') {
-        clientRequestHost = 'www.' + clientRequestHost;
-      }
-
-      // console.log(clientRequestHost);
-
-      // Determine directory and gsutil based on host
-      let dir: string, gsutil: string, gsutilDomain: string;
-      
-      if (['cdn2.aznude.com', 'cdn1.aznude.com', 'www.aznude.com', 'user-uploads.aznude.com', 'aznude.com'].includes(clientRequestHost) || 
-          clientRequestHost.includes('aznude.com')) {
-        dir = config.directories.MAIN_DIR_AZNUDE;
-        gsutil = config.gsutil.GC_WOMEN_HTML;
-        gsutilDomain = gsutil.replace('gs://', '');
-      } else if (['men.aznude.com', 'cdn-men.aznude.com', 'azmen.com', 'www.azmen.com'].includes(clientRequestHost) || 
-                 clientRequestHost.includes('azmen.com')) {
-        dir = config.directories.MAIN_DIR_AZNUDEMEN;
-        gsutil = config.gsutil.GC_MEN_HTML;
-        gsutilDomain = gsutil.replace('gs://', '');
-      } else if (['cdn2.azfans.com', 'azfans.com', 'www.azfans.com'].includes(clientRequestHost) || 
-                 clientRequestHost.includes('azfans.com')) {
-        dir = config.directories.MAIN_DIR_AZFANS;
-        gsutil = config.gsutil.GC_FANS_HTML;
-        gsutilDomain = gsutil.replace('gs://', '');
-      } else {
-        // Default fallback
-        dir = config.directories.MAIN_DIR_AZNUDE;
-        gsutil = config.gsutil.GC_WOMEN_HTML;
-        gsutilDomain = gsutil.replace('gs://', '');
-      }
-
-      if (clientRequestHost && clientRequestPath) {
-        const resultIdentify = await identifyItem(clientRequestHost, clientRequestPath);
-
-        if (resultIdentify === 'unidentified') {
-          // Match Python logic: full_thing.replace(gsutil_domain, dir)
-          // However, this replace won't work if gsutil_domain isn't in full_thing
-          // The Python code has a bug - gsutil_domain (e.g., "aznude-html") is not in full_thing (e.g., "www.aznude.com/view/...")
-          // So we fix it: convert URL to server path by removing host and prepending directory
-          const fullThing = clientRequestHost + clientRequestPath;
-          let fullThingServer: string;
-          
-          // Try Python's replace first (in case it works in some edge cases)
-          fullThingServer = fullThing.replace(gsutilDomain, dir);
-          
-          // If replace didn't change anything (gsutil_domain not found), manually convert
-          // This fixes the Python bug where replace doesn't work
-          if (fullThingServer === fullThing) {
-            // Convert URL to server path: remove host, prepend directory
-            // Example: "www.aznude.com/view/celeb/e/elisabrandani.html" -> "/var/www/html/aznbaby/view/celeb/e/elisabrandani.html"
-            if (clientRequestPath.startsWith('/')) {
-              fullThingServer = dir + clientRequestPath;
-            } else {
-              fullThingServer = dir + '/' + clientRequestPath;
-            }
-          }
-          // Add to batch instead of checking immediately
-          unidentifiedFiles.push({
-            host: clientRequestHost,
-            path: clientRequestPath,
-            serverPath: fullThingServer
-          });
-          
-          // Process batch when it reaches BATCH_SIZE
-          if (unidentifiedFiles.length >= BATCH_SIZE) {
-            await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
-            unidentifiedFiles.length = 0; // Clear the batch
-          }
-        } else if (resultIdentify !== 'invalid') {
-          // Create ordered result with IP and date at the end
-          const orderedResult: LogEntry = {
-            ...resultIdentify,
-            ip: String(clientIP),
-            date: String(dateGet)
-          };
-          entries.push(orderedResult);
-        }
-      }
-    } catch (error) {
-      console.error('Error parsing line:', error);
-      continue;
+    // Skip SSH checks if authentication has already failed
+    if (sshAuthFailed) {
+      return; // Silently skip - SSH is not available
     }
-  }
 
-  console.log(`Processed ${lineCount} lines from ${filePath}`);
+    // Calculate SSH timeout (60 seconds max - increased for large batches)
+    // Use a longer timeout for large batches to prevent premature timeouts
+    const sshTimeout = Math.min(60000, 1000 + (files.length * 1000)); // 1s base + 1s per file, max 60s
 
-  // Process remaining batch items
-  if (unidentifiedFiles.length > 0) {
-    await processBatchSSHChecks(unidentifiedFiles, notFoundFile);
-  }
+    // Log total file count before starting batch SSH process
+    const sshBatchStartTime = Date.now();
+    // console.log(`[SSH] Processing ${files.length} files (timeout: ${sshTimeout/1000}s)`);
 
-  return entries;
-}
+    // Build a single SSH command that checks all files
+    // Use a simpler approach: escape paths properly and construct the command
+    // Structure: ssh ... "sh -c 'for file in ...; do ...; done'"
+    const filePaths = files.map(f => f.serverPath);
 
-// Batch process SSH file existence checks
-// Track if SSH has been tested and failed
-let sshAuthFailed = false;
+    // Escape each path: replace ' with '\'' (end quote, escaped quote, start quote)
+    // Then wrap in single quotes
+    const escapedPaths = filePaths.map(path => {
+      const escaped = path.replace(/'/g, "'\\''");
+      return `'${escaped}'`;
+    }).join(' ');
 
-async function processBatchSSHChecks(
-  files: Array<{ host: string; path: string; serverPath: string }>,
-  notFoundFile: string
-): Promise<void> {
-  if (files.length === 0) return;
-  
-  // Skip SSH checks if authentication has already failed
-  if (sshAuthFailed) {
-    return; // Silently skip - SSH is not available
-  }
-  
-  // Calculate SSH timeout (60 seconds max - increased for large batches)
-  // Use a longer timeout for large batches to prevent premature timeouts
-  const sshTimeout = Math.min(60000, 1000 + (files.length * 1000)); // 1s base + 1s per file, max 60s
-  
-  // Log total file count before starting batch SSH process
-  const sshBatchStartTime = Date.now();
-  // console.log(`[SSH] Processing ${files.length} files (timeout: ${sshTimeout/1000}s)`);
-  
-  // Build a single SSH command that checks all files
-  // Use a simpler approach: escape paths properly and construct the command
-  // Structure: ssh ... "sh -c 'for file in ...; do ...; done'"
-  const filePaths = files.map(f => f.serverPath);
-  
-  // Escape each path: replace ' with '\'' (end quote, escaped quote, start quote)
-  // Then wrap in single quotes
-  const escapedPaths = filePaths.map(path => {
-    const escaped = path.replace(/'/g, "'\\''");
-    return `'${escaped}'`;
-  }).join(' ');
-  
-  // Build the for loop command
-  // Inside single quotes, we need to escape: $ becomes \$ (for variables)
-  const forLoop = `for file in ${escapedPaths}; do test -f "\\$file" && echo "EXISTS:\\$file" || echo "NOTEXISTS:\\$file"; done`;
-  
-  // Now wrap in single quotes for sh -c, escaping any single quotes in forLoop
-  // Single quotes in forLoop need to become: ' becomes '\'' 
-  const escapedForLoop = forLoop.replace(/'/g, "'\\''");
-  
-  // Final command: ssh ... "sh -c '...'"
-  // Outer double quotes for SSH, inner single quotes for sh -c
-  const command = `${config.LEASEWEB_SERVER_SSH} "sh -c '${escapedForLoop}'"`;
-  
-  let attemptsFileCheck = 0;
-  let unexpectedError = 0;
+    // Build the for loop command
+    // Inside single quotes, we need to escape: $ becomes \$ (for variables)
+    const forLoop = `for file in ${escapedPaths}; do test -f "\\$file" && echo "EXISTS:\\$file" || echo "NOTEXISTS:\\$file"; done`;
 
-  while (true) {
-    try {
-      const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
-      
-      if (attemptsFileCheck > 0) {
-        // console.log(`[SSH] Retry attempt ${attemptsFileCheck + 1}/10 for ${files.length} files`);
-      }
-      
-      const sshCommandStartTime = Date.now();
-      // console.log(`[SSH] Executing command (timeout: ${sshTimeout/1000}s)...`);
-      
-      const outputCommand = bashCommand(normalizedCommand, sshTimeout);
-      
-      const sshCommandDuration = ((Date.now() - sshCommandStartTime) / 1000).toFixed(2);
-      // console.log(`[SSH] Command completed in ${sshCommandDuration}s`);
-      
-      // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
-      const results = new Map<string, boolean>();
-      const lines = outputCommand.split('\n');
-      
-      for (const line of lines) {
-        if (line.startsWith('EXISTS:')) {
-          const path = line.substring(7).trim();
-          results.set(path, true);
-        } else if (line.startsWith('NOTEXISTS:')) {
-          const path = line.substring(10).trim();
-          results.set(path, false);
+    // Now wrap in single quotes for sh -c, escaping any single quotes in forLoop
+    // Single quotes in forLoop need to become: ' becomes '\'' 
+    const escapedForLoop = forLoop.replace(/'/g, "'\\''");
+
+    // Final command: ssh ... "sh -c '...'"
+    // Outer double quotes for SSH, inner single quotes for sh -c
+    const command = `${config.LEASEWEB_SERVER_SSH} "sh -c '${escapedForLoop}'"`;
+
+    let attemptsFileCheck = 0;
+    let unexpectedError = 0;
+
+    while (true) {
+      try {
+        const normalizedCommand = Buffer.from(command, 'utf-8').toString('utf-8');
+
+        if (attemptsFileCheck > 0) {
+          // console.log(`[SSH] Retry attempt ${attemptsFileCheck + 1}/10 for ${files.length} files`);
         }
-      }
-      
-      // Process results and write to notfound.txt
-      const notFoundDir = notFoundFile.substring(0, notFoundFile.lastIndexOf('/'));
-      if (!existsSync(notFoundDir)) {
-        mkdirSync(notFoundDir, { recursive: true });
-      }
-      
-      let foundCount = 0;
-      for (const file of files) {
-        const exists = results.get(file.serverPath);
-        if (exists === true) {
-          appendFileSync(notFoundFile, file.host + file.path + '\n');
-          foundCount++;
+
+        const sshCommandStartTime = Date.now();
+        // console.log(`[SSH] Executing command (timeout: ${sshTimeout/1000}s)...`);
+
+        const outputCommand = bashCommand(normalizedCommand, sshTimeout);
+
+        const sshCommandDuration = ((Date.now() - sshCommandStartTime) / 1000).toFixed(2);
+        // console.log(`[SSH] Command completed in ${sshCommandDuration}s`);
+
+        // Parse results - each line is either "EXISTS:path" or "NOTEXISTS:path"
+        const results = new Map<string, boolean>();
+        const lines = outputCommand.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('EXISTS:')) {
+            const path = line.substring(7).trim();
+            results.set(path, true);
+          } else if (line.startsWith('NOTEXISTS:')) {
+            const path = line.substring(10).trim();
+            results.set(path, false);
+          }
         }
-      }
-      
-      const sshBatchDuration = ((Date.now() - sshBatchStartTime) / 1000).toFixed(2);
-      // console.log(`[SSH] Batch completed in ${sshBatchDuration}s - Found: ${foundCount}/${files.length} files exist`);
-      
-      break; // Success
-      
-    } catch (error: any) {
-      const errorMessage = error.message || String(error);
-      const errorOutput = error.stderr || error.output?.[2] || '';
-      
-      // Check if it's a persistent SSH authentication error
-      if (errorMessage.includes('Permission denied (publickey)') || 
+
+        // Process results and write to notfound.txt
+        const notFoundDir = notFoundFile.substring(0, notFoundFile.lastIndexOf('/'));
+        if (!existsSync(notFoundDir)) {
+          mkdirSync(notFoundDir, { recursive: true });
+        }
+
+        let foundCount = 0;
+        for (const file of files) {
+          const exists = results.get(file.serverPath);
+          if (exists === true) {
+            appendFileSync(notFoundFile, file.host + file.path + '\n');
+            foundCount++;
+          }
+        }
+
+        const sshBatchDuration = ((Date.now() - sshBatchStartTime) / 1000).toFixed(2);
+        // console.log(`[SSH] Batch completed in ${sshBatchDuration}s - Found: ${foundCount}/${files.length} files exist`);
+
+        break; // Success
+
+      } catch (error: any) {
+        const errorMessage = error.message || String(error);
+        const errorOutput = error.stderr || error.output?.[2] || '';
+
+        // Check if it's a persistent SSH authentication error
+        if (errorMessage.includes('Permission denied (publickey)') ||
           errorOutput.includes('Permission denied (publickey)')) {
-        // Mark SSH as failed and only log once
-        if (!sshAuthFailed) {
-          sshAuthFailed = true;
-          console.warn(`\n[SSH] ⚠️  Authentication failed - SSH file existence checks will be skipped`);
-          console.warn(`[SSH] Reason: Permission denied (publickey)`);
-          console.warn(`[SSH] Current config: ${config.LEASEWEB_SERVER_SSH}`);
-          console.warn(`[SSH] To fix:`);
-          console.warn(`[SSH]   1. Copy your private key to: ./key/id_rsa (in project root)`);
-          console.warn(`[SSH]   2. Update .env: LEASEWEB_SERVER_SSH="ssh -i ./key/id_rsa pavel@67.205.170.17"`);
-          console.warn(`[SSH]   3. On Linux/Mac: chmod 600 ./key/id_rsa (Windows doesn't need this)\n`);
+          // Mark SSH as failed and only log once
+          if (!sshAuthFailed) {
+            sshAuthFailed = true;
+            console.warn(`\n[SSH] ⚠️  Authentication failed - SSH file existence checks will be skipped`);
+            console.warn(`[SSH] Reason: Permission denied (publickey)`);
+            console.warn(`[SSH] Current config: ${config.LEASEWEB_SERVER_SSH}`);
+            console.warn(`[SSH] To fix:`);
+            console.warn(`[SSH]   1. Copy your private key to: ./key/id_rsa (in project root)`);
+            console.warn(`[SSH]   2. Update .env: LEASEWEB_SERVER_SSH="ssh -i ./key/id_rsa pavel@67.205.170.17"`);
+            console.warn(`[SSH]   3. On Linux/Mac: chmod 600 ./key/id_rsa (Windows doesn't need this)\n`);
+          }
+          break; // Skip batch, continue processing
         }
-        break; // Skip batch, continue processing
-      }
-      
-      // Check if it's a timeout error
-      if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timed out')) {
-        console.error(`[SSH] Timeout after ${sshTimeout/1000}s (attempt ${attemptsFileCheck + 1}/10)`);
-      } else {
-        console.error(`[SSH] Batch check failed (attempt ${attemptsFileCheck + 1}):`, errorMessage.substring(0, 200));
-      }
-      
-      unexpectedError++;
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      
-      if (unexpectedError >= 10) {
-        console.error(`[SSH] Batch check failed 10 times - skipping ${files.length} files`);
-        break; // Skip batch after 10 failures
-      }
-      
-      attemptsFileCheck++;
-      if (attemptsFileCheck >= 10) {
-        console.error(`[SSH] Unable to check files after 10 attempts - skipping ${files.length} files`);
-        break; // Skip batch after 10 attempts
+
+        // Check if it's a timeout error
+        if (errorMessage.includes('timeout') || errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timed out')) {
+          console.error(`[SSH] Timeout after ${sshTimeout / 1000}s (attempt ${attemptsFileCheck + 1}/10)`);
+        } else {
+          console.error(`[SSH] Batch check failed (attempt ${attemptsFileCheck + 1}):`, errorMessage.substring(0, 200));
+        }
+
+        unexpectedError++;
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        if (unexpectedError >= 10) {
+          console.error(`[SSH] Batch check failed 10 times - skipping ${files.length} files`);
+          break; // Skip batch after 10 failures
+        }
+
+        attemptsFileCheck++;
+        if (attemptsFileCheck >= 10) {
+          console.error(`[SSH] Unable to check files after 10 attempts - skipping ${files.length} files`);
+          break; // Skip batch after 10 attempts
+        }
       }
     }
   }
-}
 
   // List all folders in bucket
   console.log(`[${genderType}] Listing folders in bucket: ${bucketName}`);
@@ -450,7 +450,7 @@ async function processBatchSSHChecks(
   });
 
   console.log(`[${genderType}] Folders to process after filtering: ${filteredFolders.length}`);
-  
+
   if (filteredFolders.length > 0) {
     console.log(`[${genderType}] Folders to process:`);
     filteredFolders.forEach((folder, index) => {
@@ -468,34 +468,34 @@ async function processBatchSSHChecks(
   let processedCount = 0;
   let successCount = 0;
   let failedCount = 0;
-  
+
   for (const folder of filteredFolders) {
     const dateDirectory = folder.split('/').slice(-2, -1)[0];
     processedCount++;
-    
+
     // Setup logging for this date folder
     setupDateLogging(dateDirectory);
-    
+
     // Clear and pre-load database tables at the start of each date processing
     // This loads all celebs, movies, stories into memory for fast lookups
     clearDbQueryCache();
     await preloadTableData(databaseGlobal);
-    
+
     // Clear missing ID file at the start of each date (optional - comment out if you want cumulative log)
     // writeFileSync(missingIdFile, ''); // Uncomment to clear file per date
-    
+
     console.log(`\n${'='.repeat(60)}`);
     console.log(`[${genderType}] Processing folder ${processedCount}/${filteredFolders.length}: ${dateDirectory}`);
     console.log(`${'='.repeat(60)}`);
     console.log(`📝 Logging to: ${currentLogFilePath}\n`);
-    
+
     const folderStartTime = Date.now();
 
     // Normalize paths - handle both absolute and relative paths
-    const logDir = config.directories.CLOUDFLARE_LOG_DIR.startsWith('./') 
-      ? config.directories.CLOUDFLARE_LOG_DIR 
+    const logDir = config.directories.CLOUDFLARE_LOG_DIR.startsWith('./')
+      ? config.directories.CLOUDFLARE_LOG_DIR
       : config.directories.CLOUDFLARE_LOG_DIR;
-      
+
     const directory = join(logDir, dateDirectory);
     const outputDirectory = join(logDir, 'output');
     const outputFilePath = join(logDir, 'allinone.txt');
@@ -530,17 +530,17 @@ async function processBatchSSHChecks(
       const batch = files.slice(i, i + FILE_BATCH_SIZE);
       const batchNumber = Math.floor(i / FILE_BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(files.length / FILE_BATCH_SIZE);
-      
+
       console.log(`[${genderType}][${dateDirectory}] Processing batch ${batchNumber}/${totalBatches} (${batch.length} files)...`);
-      
+
       const batchStartTime = Date.now();
-      
+
       // Process batch in parallel with timeout protection and retry logic
       const batchPromises = batch.map(async (fileName) => {
         const fileStartTime = Date.now();
         const filePath = join(directory, fileName);
         const tempOutFile = join(outputDirectory, fileName);
-        
+
         // Helper function to process a single file
         const processFile = async (attempt: number): Promise<{ fileName: string; success: boolean; error?: string; entryCount: number }> => {
           const attemptStartTime = Date.now();
@@ -550,27 +550,27 @@ async function processBatchSSHChecks(
             } else {
               // console.log(`[FILE] Starting: ${fileName} (timeout: ${FILE_TIMEOUT/1000/60} minutes)`);
             }
-            
+
             // Add timeout wrapper for file processing
             const processPromise = parseLargeJsonFile(filePath);
-            const timeoutPromise = new Promise<never>((_, reject) => 
+            const timeoutPromise = new Promise<never>((_, reject) =>
               setTimeout(() => {
                 const elapsed = ((Date.now() - attemptStartTime) / 1000 / 60).toFixed(1);
-                reject(new Error(`Timeout: File processing exceeded ${FILE_TIMEOUT/1000/60} minutes (${elapsed} minutes elapsed)`));
+                reject(new Error(`Timeout: File processing exceeded ${FILE_TIMEOUT / 1000 / 60} minutes (${elapsed} minutes elapsed)`));
               }, FILE_TIMEOUT)
             );
-            
+
             const entryFetch = await Promise.race([processPromise, timeoutPromise]);
-            
+
             const attemptDuration = ((Date.now() - attemptStartTime) / 1000).toFixed(1);
             const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
-            
+
             if (attempt > 1) {
               // console.log(`[FILE] Retry succeeded: ${fileName} in ${attemptDuration}s (total: ${totalDuration}s, ${entryFetch.length} entries)`);
             } else {
               // console.log(`[FILE] Completed: ${fileName} in ${attemptDuration}s (${entryFetch.length} entries)`);
             }
-            
+
             // Python: temp_out_file = output_directory + file_path.split('/')[-1]
             // This gets just the filename from the full path
             const outputLines: string[] = [];
@@ -583,22 +583,22 @@ async function processBatchSSHChecks(
 
             // Remove duplicates
             removeDuplicatesFile(tempOutFile);
-            
+
             return { fileName, success: true, entryCount: entryFetch.length };
           } catch (error: any) {
             const attemptDuration = ((Date.now() - attemptStartTime) / 1000).toFixed(1);
             const errorMsg = error.message || String(error);
-            
+
             if (errorMsg.includes('Timeout')) {
               console.error(`[FILE] Timeout on attempt ${attempt}: ${fileName} after ${attemptDuration}s`);
             } else {
               console.error(`[FILE] Failed on attempt ${attempt}: ${fileName} after ${attemptDuration}s - ${errorMsg}`);
             }
-            
+
             throw error; // Re-throw to allow retry logic
           }
         };
-        
+
         // Try processing the file, with up to MAX_RETRIES retries on timeout
         let lastError: any;
         for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
@@ -607,7 +607,7 @@ async function processBatchSSHChecks(
           } catch (error: any) {
             lastError = error;
             const errorMsg = error.message || String(error);
-            
+
             // Only retry if it was a timeout error and we haven't exceeded max retries
             if (errorMsg.includes('Timeout') && attempt <= MAX_RETRIES) {
               console.log(`[FILE] Retry attempt ${attempt}/${MAX_RETRIES} for ${fileName} after timeout...`);
@@ -621,12 +621,12 @@ async function processBatchSSHChecks(
                 console.error(`[FILE] Failed: ${fileName} after ${totalDuration}s - ${errorMsg}`);
               }
               console.error(`[${genderType}][${dateDirectory}] Error processing file ${fileName}: ${errorMsg}`);
-              
+
               return { fileName, success: false, error: errorMsg, entryCount: 0 };
             }
           }
         }
-        
+
         // This should never be reached, but TypeScript needs it
         const totalDuration = ((Date.now() - fileStartTime) / 1000).toFixed(1);
         const finalErrorMsg = lastError?.message || String(lastError || 'Unknown error');
@@ -636,14 +636,14 @@ async function processBatchSSHChecks(
       // Wait for all files in batch to complete - each file has its own timeout
       // No batch timeout needed since each file will timeout individually (7 min + 3 retries = max 28 min)
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
-      
-      console.log(`[BATCH] Waiting for ${batch.length} files to complete (each file: ${FILE_TIMEOUT/1000/60} min timeout with retry)...`);
-      
+
+      console.log(`[BATCH] Waiting for ${batch.length} files to complete (each file: ${FILE_TIMEOUT / 1000 / 60} min timeout with retry)...`);
+
       // Track progress with periodic updates and identify stuck files
       let completedCount = 0;
       const fileStartTimes = new Map<string, number>();
       batch.forEach(fileName => fileStartTimes.set(fileName, Date.now()));
-      
+
       const progressInterval = setInterval(() => {
         const elapsed = ((Date.now() - batchStartTime) / 1000 / 60).toFixed(1);
         const pendingFiles = batch.filter(f => !completionTracker.has(f));
@@ -651,18 +651,18 @@ async function processBatchSSHChecks(
           const startTime = fileStartTimes.get(f) || batchStartTime;
           return (Date.now() - startTime) > FILE_TIMEOUT; // Files running > FILE_TIMEOUT
         });
-        
+
         console.log(`[BATCH] Progress: ${completedCount}/${batch.length} files completed, ${elapsed} minutes elapsed`);
         if (stuckFiles.length > 0) {
-          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>${FILE_TIMEOUT/1000/60} min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
+          console.log(`[BATCH] ⚠️  ${stuckFiles.length} files appear stuck (>${FILE_TIMEOUT / 1000 / 60} min): ${stuckFiles.slice(0, 5).join(', ')}${stuckFiles.length > 5 ? '...' : ''}`);
         }
       }, 60000); // Log every minute
-      
+
       // Track completion for each file
       const completionTracker = new Map<string, { fileName: string; success: boolean; error?: string; entryCount: number }>();
-      
+
       // Wrap each promise to track completion
-      const trackedPromises = batchPromises.map((promise, index) => 
+      const trackedPromises = batchPromises.map((promise, index) =>
         promise.then(result => {
           completedCount++;
           completionTracker.set(batch[index], result);
@@ -679,16 +679,16 @@ async function processBatchSSHChecks(
           return errorResult;
         })
       );
-      
+
       try {
         // Wait for all files to complete - each has its own timeout, so Promise.all will complete
         // when all files have either succeeded or timed out (max 28 minutes per file with 3 retries)
         await Promise.all(trackedPromises);
-        
+
         clearInterval(progressInterval);
-        
+
         // Build results from completion tracker
-        batchResults = batch.map(fileName => 
+        batchResults = batch.map(fileName =>
           completionTracker.get(fileName) || {
             fileName,
             success: false,
@@ -696,7 +696,7 @@ async function processBatchSSHChecks(
             entryCount: 0
           }
         );
-        
+
         const finalCompleted = batchResults.filter(r => r.success).length;
         const batchDuration = ((Date.now() - batchStartTime) / 1000 / 60).toFixed(1);
         console.log(`[BATCH] Batch ${batchNumber} finished: ${finalCompleted}/${batch.length} files succeeded (took ${batchDuration} minutes)`);
@@ -706,37 +706,37 @@ async function processBatchSSHChecks(
         console.error(`[BATCH] Unexpected error in batch ${batchNumber}:`, error);
         throw error;
       }
-      
+
       // Count successes and errors
       const batchSuccesses = batchResults.filter(r => r.success).length;
       const batchErrors = batchResults.filter(r => !r.success).length;
       const batchEntryCount = batchResults.reduce((sum, r) => sum + (r.entryCount || 0), 0);
-      
+
       totalProcessed += batchSuccesses;
       totalErrors += batchErrors;
-      
+
       const batchDuration = ((Date.now() - batchStartTime) / 1000).toFixed(1);
       const elapsedTotal = ((Date.now() - folderStartTime) / 1000).toFixed(1);
       const avgTimePerFile = totalProcessed > 0 ? (Date.now() - folderStartTime) / totalProcessed : 0;
       const remainingFiles = files.length - totalProcessed;
       const etaSeconds = remainingFiles * avgTimePerFile / 1000;
       const etaMinutes = Math.floor(etaSeconds / 60);
-      
+
       // Flush html_map inserts after each batch to avoid memory buildup
       const flushStartTime = Date.now();
       console.log(`[DB] Flushing html_map batch inserts...`);
       await flushAllHtmlMapBatches();
       const flushDuration = ((Date.now() - flushStartTime) / 1000).toFixed(2);
       console.log(`[DB] Batch flush completed in ${flushDuration}s`);
-      
+
       // Log batch summary with record counts
       console.log(`[${genderType}][${dateDirectory}] Batch ${batchNumber}/${totalBatches} completed in ${batchDuration}s`);
       console.log(`[${genderType}][${dateDirectory}]   Success: ${batchSuccesses}, Errors: ${batchErrors}, Entries: ${batchEntryCount.toLocaleString()}`);
-      console.log(`[${genderType}][${dateDirectory}]   Total progress: ${totalProcessed}/${files.length} files (${((totalProcessed/files.length)*100).toFixed(1)}%)`);
+      console.log(`[${genderType}][${dateDirectory}]   Total progress: ${totalProcessed}/${files.length} files (${((totalProcessed / files.length) * 100).toFixed(1)}%)`);
       if (etaMinutes > 0) {
         console.log(`[${genderType}][${dateDirectory}]   Elapsed: ${elapsedTotal}s, ETA: ${etaMinutes}m`);
       }
-      
+
       // Log detailed record counts per file (only for successful files)
       if (batchEntryCount > 0) {
         const successfulFiles = batchResults.filter(r => r.success && r.entryCount > 0);
@@ -747,7 +747,7 @@ async function processBatchSSHChecks(
           });
         }
       }
-      
+
       // Log any errors
       if (batchErrors > 0) {
         console.log(`  ✗ Failed files:`);
@@ -757,7 +757,7 @@ async function processBatchSSHChecks(
         });
       }
     }
-    
+
     // Calculate total records across all batches
     let totalRecords = 0;
     for (const fileName of files) {
@@ -772,7 +772,7 @@ async function processBatchSSHChecks(
         }
       }
     }
-    
+
     console.log(`\n[${genderType}][${dateDirectory}] 📊 File Processing Summary:`);
     console.log(`  ✓ Files processed: ${totalProcessed}/${files.length} successful`);
     console.log(`  ✗ Files failed: ${totalErrors}`);
@@ -780,11 +780,11 @@ async function processBatchSSHChecks(
 
     // Step 3: Merge all files (using streaming to avoid memory issues)
     console.log(`[${genderType}][${dateDirectory}] Step 3: Merging all files into one (streaming mode)`);
-    
+
     // Create output file stream
     const outputStream = createWriteStream(outputFilePath, { flags: 'w' });
     let mergedCount = 0;
-    
+
     // Process files one at a time and append to output
     for (const fileName of files) {
       const tempOutFile = join(outputDirectory, fileName);
@@ -796,14 +796,14 @@ async function processBatchSSHChecks(
             input: fileStream,
             crlfDelay: Infinity
           });
-          
+
           for await (const line of rl) {
             const trimmed = line.trim();
             if (trimmed) {
               outputStream.write(trimmed + '\n');
             }
           }
-          
+
           mergedCount++;
           if (mergedCount % 100 === 0) {
             console.log(`[${genderType}][${dateDirectory}] Merged ${mergedCount}/${files.length} files...`);
@@ -813,59 +813,59 @@ async function processBatchSSHChecks(
         }
       }
     }
-    
+
     // Close the output stream
     outputStream.end();
     await new Promise<void>((resolve) => {
       outputStream.on('close', () => resolve());
     });
-    
+
     console.log(`[${genderType}][${dateDirectory}] ✓ Merged ${mergedCount} files successfully`);
 
     // Step 4: Sort and deduplicate using system sort (memory efficient)
     // Use 'sort -u' which handles both sorting and deduplication efficiently
     // This uses external sorting and doesn't load everything into memory
     console.log(`[${genderType}][${dateDirectory}] Step 4: Sorting and deduplicating (using system sort -u)`);
-    
+
     const { execSync } = await import('child_process');
-    
+
     try {
       // Use system 'sort -u' command:
       // -u: unique (remove duplicates)
       // This uses external sorting and is very memory efficient
       console.log(`[${genderType}][${dateDirectory}] Running system sort -u (this may take a while for large files)...`);
-      
-      execSync(`sort -u "${outputFilePath}" -o "${outputFilePathUnique}"`, { 
+
+      execSync(`sort -u "${outputFilePath}" -o "${outputFilePathUnique}"`, {
         encoding: 'utf-8',
         maxBuffer: 1024 * 1024 * 1024, // 1GB buffer
         stdio: 'inherit' // Show progress
       });
-      
+
       console.log(`[${genderType}][${dateDirectory}] ✓ Sort and deduplication complete`);
-      
+
       // Count lines in the final file
       const finalStream = createReadStream(outputFilePathUnique, { encoding: 'utf-8' });
       const finalRl = createInterface({
         input: finalStream,
         crlfDelay: Infinity
       });
-      
+
       let finalCount = 0;
       for await (const line of finalRl) {
         if (line.trim()) {
           finalCount++;
         }
       }
-      
+
       console.log(`[${genderType}][${dateDirectory}] ✓ Final file contains ${finalCount.toLocaleString()} unique lines`);
     } catch (error: any) {
       console.error(`[${genderType}][${dateDirectory}] System sort failed:`, error.message);
       console.error(`[${genderType}][${dateDirectory}] Attempting fallback method...`);
-      
+
       // Fallback: Use streaming with smaller chunks
       // This is less memory efficient but should work if system sort is unavailable
       console.log(`[${genderType}][${dateDirectory}] Using streaming deduplication fallback...`);
-      
+
       const seen = new Set<string>();
       const uniqueStream = createWriteStream(outputFilePathUnique, { flags: 'w' });
       const inputStream = createReadStream(outputFilePath, { encoding: 'utf-8' });
@@ -873,10 +873,10 @@ async function processBatchSSHChecks(
         input: inputStream,
         crlfDelay: Infinity
       });
-      
+
       let uniqueCount = 0;
       const MAX_SET_SIZE = 5000000; // Limit Set size to 5M entries
-      
+
       for await (const line of rl) {
         const trimmed = line.trim();
         if (trimmed) {
@@ -884,7 +884,7 @@ async function processBatchSSHChecks(
             seen.add(trimmed);
             uniqueStream.write(trimmed + '\n');
             uniqueCount++;
-            
+
             // Periodically clear the Set to free memory (we've already written unique lines)
             if (seen.size >= MAX_SET_SIZE) {
               seen.clear();
@@ -892,25 +892,25 @@ async function processBatchSSHChecks(
                 console.log(`[${genderType}][${dateDirectory}] Processed ${uniqueCount.toLocaleString()} unique lines...`);
               }
             }
-            
+
             if (uniqueCount % 1000000 === 0) {
               console.log(`[${genderType}][${dateDirectory}] Deduplicated ${uniqueCount.toLocaleString()} unique lines...`);
             }
           }
         }
       }
-      
+
       uniqueStream.end();
       await new Promise<void>((resolve) => {
         uniqueStream.on('close', () => resolve());
       });
-      
+
       console.log(`[${genderType}][${dateDirectory}] ✓ Fallback deduplication complete: ${uniqueCount.toLocaleString()} unique lines`);
-      
+
       // Now sort the deduplicated file
       console.log(`[${genderType}][${dateDirectory}] Sorting deduplicated file...`);
       try {
-        execSync(`sort "${outputFilePathUnique}" -o "${outputFilePathUnique}"`, { 
+        execSync(`sort "${outputFilePathUnique}" -o "${outputFilePathUnique}"`, {
           encoding: 'utf-8',
           maxBuffer: 1024 * 1024 * 1024
         });
@@ -929,7 +929,7 @@ async function processBatchSSHChecks(
       const absolutePath = resolve(outputFilePathUnique);
       const remotePath = `r2:${bucketNameClean}/${dateDirectory}.txt`;
       const rcloneResult = await rcloneCopy(absolutePath, remotePath);
-      
+
       if (rcloneResult !== 'success') {
         console.error('Rclone copy failed');
         process.exit(1);
@@ -982,7 +982,7 @@ async function processBatchSSHChecks(
   console.log(`  Failed: ${failedCount}`);
   console.log(`  Total time: ${totalDuration}s`);
   console.log(`${'='.repeat(60)}\n`);
-  
+
   // Close current log stream and restore original console
   if (currentLogStream) {
     (currentLogStream as WriteStream).end();
@@ -991,10 +991,10 @@ async function processBatchSSHChecks(
   console.log = originalLog;
   console.warn = originalWarn;
   console.error = originalError;
-  
+
   // Clear missing ID logger
   setMissingIdLogger(null);
-  
+
   // Flush any remaining html_map inserts
   await flushAllHtmlMapBatches();
 }
@@ -1012,23 +1012,23 @@ console.log('✓ HTML map loaded successfully\n');
 
 // Process all genders sequentially: f, then m, then fans
 // Each gender will complete fully before moving to the next one
-const genders: Array<'f' | 'm' | 'fans'> = ['f', 'm', 'fans'];
+const genders: Array<'f' | 'm' | 'fans'> = ['m'];
 const genderResults: Array<{ gender: string; success: boolean; error?: string }> = [];
 
 for (let i = 0; i < genders.length; i++) {
   const gender = genders[i];
   const genderIndex = i + 1;
   const totalGenders = genders.length;
-  
+
   console.log(`\n${'='.repeat(60)}`);
   console.log(`🚀 Starting gender ${genderIndex}/${totalGenders}: ${gender}`);
   console.log(`${'='.repeat(60)}\n`);
-  
+
   try {
     await processGender(gender);
     genderResults.push({ gender, success: true });
     console.log(`\n✅ Gender ${gender} (${genderIndex}/${totalGenders}) completed successfully\n`);
-    
+
     // If not the last gender, show that we're moving to the next one
     if (i < genders.length - 1) {
       const nextGender = genders[i + 1];
