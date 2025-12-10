@@ -1012,7 +1012,7 @@ console.log('✓ HTML map loaded successfully\n');
 
 // Process all genders sequentially: f, then m, then fans
 // Each gender will complete fully before moving to the next one
-const genders: Array<'f' | 'm' | 'fans'> = ['m'];
+const genders: Array<'f' | 'm' | 'fans'> = ['fans'];
 const genderResults: Array<{ gender: string; success: boolean; error?: string }> = [];
 
 for (let i = 0; i < genders.length; i++) {
