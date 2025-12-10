@@ -21,7 +21,7 @@ import {
 import { whatIsGender, loadHtmlMap, identifyItem, clearDbQueryCache, preloadTableData, setMissingIdLogger, flushAllHtmlMapBatches } from './utils/urlIdentifier.js';
 
 // Constants
-const FILE_TIMEOUT = 7 * 60 * 1000; // 7 minutes per file (in milliseconds)
+const FILE_TIMEOUT = 5 * 60 * 1000; // 5 minutes per file (in milliseconds)
 const MAX_RETRIES = 2; // Maximum number of retry attempts for file processing
 const FILE_BATCH_SIZE = 50; // Number of files to process in each batch
 
@@ -634,7 +634,7 @@ async function processGender(genderType: 'f' | 'm' | 'fans'): Promise<void> {
       });
 
       // Wait for all files in batch to complete - each file has its own timeout
-      // No batch timeout needed since each file will timeout individually (7 min + 3 retries = max 28 min)
+      // No batch timeout needed since each file will timeout individually (5 min + 3 retries = max 20 min)
       let batchResults: Array<{ fileName: string; success: boolean; error?: string; entryCount: number }>;
 
       console.log(`[BATCH] Waiting for ${batch.length} files to complete (each file: ${FILE_TIMEOUT / 1000 / 60} min timeout with retry)...`);
@@ -1009,7 +1009,7 @@ console.log('='.repeat(60));
 console.log('\n📋 Loading HTML map associations...');
 await loadHtmlMap();
 console.log('✓ HTML map loaded successfully\n');
-
+ 
 // Process all genders sequentially: f, then m, then fans
 // Each gender will complete fully before moving to the next one
 const genders: Array<'f' | 'm' | 'fans'> = ['f', 'm', 'fans'];
